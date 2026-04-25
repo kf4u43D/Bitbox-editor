@@ -1,12 +1,13 @@
-# Bitbox-editor fork by kf4u43D
+# Bitbox-editor fork by Dr Delos
 
 Fork of `BartBral/Bitbox-editor` with BITBOXER-focused workflow and UI enhancements for 1010music Bitbox Micro and mk2.
 
-## Live link
+## Links
 
-[Upstream editor demo](https://bartbral.github.io/Bitbox-editor/)
+- [Enhanced fork branch](https://github.com/kf4u43D/Bitbox-editor/tree/bitboxer-enhancements)
+- [Upstream editor demo](https://bartbral.github.io/Bitbox-editor/)
 
-Note: the live link above points to the upstream hosted demo. It may not include the fork-only changes from this branch.
+Note: the upstream demo may not include the fork-only changes from `bitboxer-enhancements`.
 
 ## Main additions
 
