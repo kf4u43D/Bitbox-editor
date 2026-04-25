@@ -10,11 +10,11 @@ Fork focused on a faster Bitbox editing workflow: pad preview from the grid, loc
 
 ## Preview
 
-![Sample Browser](artifacts/ui-renders/30-browser/browser__sample.png)
+![Sample Browser](docs/images/browser-sample.png)
 
-![Slicer Grid](artifacts/ui-renders/10-slicer/slicer__pos.png)
+![Slicer Grid](docs/images/slicer-pos.png)
 
-![Multisample Editor](artifacts/ui-renders/10-multisample/multisample__multi.png)
+![Multisample Editor](docs/images/multisample-editor.png)
 
 ## Added Features
 
