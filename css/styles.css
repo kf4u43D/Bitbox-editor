@@ -40,6 +40,26 @@
     --line-accent: #9f582c46;
     --waveform-line: #ffa600;
     --waveform-center: #4a4038;
+    --pad-selected-bg: #7d4514;
+    --pad-active-bg: #582f13;
+    --pad-active-selected-bg: #794614;
+    --pad-selected-glow: rgba(255, 238, 0, 0.3);
+    --pad-active-selected-glow: #9946137c;
+    --select-surface: #a35a2d;
+    --select-surface-hover: #8d4d26;
+    --select-option-selected: #ffa600;
+    --scrollbar-track: #241d1a;
+    --scrollbar-thumb: #8d4d26;
+    --scrollbar-thumb-hover: #b36432;
+    --preview-ring: rgba(255, 166, 0, 0.65);
+    --preview-fill: rgba(255, 166, 0, 0.2);
+    --drag-over-bg: #4a4a2a;
+    --marker-sample: #ff6b6b;
+    --marker-loop: #7fb6ff;
+    --marker-slice: #8fe388;
+    --overlay-accent: #ffb347;
+    --beat-grid: rgba(163, 90, 45, 0.5);
+    --beat-grid-subtle: rgba(163, 90, 45, 0.2);
 
     /* Spacing */
     --spacing-xs: 4px;
@@ -220,9 +240,9 @@ h1 {
     grid-template-columns: repeat(4, 1fr);
     gap: var(--spacing-md);
     margin-bottom: var(--spacing-lg);
-    max-width: 500px; /* ← ADD THIS */
-    margin-left: auto;  /* ← ADD THIS (centers grid) */
-    margin-right: auto; /* ← ADD THIS */
+    max-width: 500px; /* â† ADD THIS */
+    margin-left: auto;  /* â† ADD THIS (centers grid) */
+    margin-right: auto; /* â† ADD THIS */
 }
 
 /* Individual Pad Styling */
@@ -250,32 +270,24 @@ h1 {
 
 /* Pad States */
 .pad.selected {
-    background: #7d4514;
+    background: var(--pad-selected-bg);
     border-color: var(--color-accent-blue);
-    box-shadow: 0 0 15px rgba(255, 238, 0, 0.3);
-}
-
-:root[data-theme="dark-spectral"] .pad.selected {
-    background: #263552;
-}
-
-:root[data-theme="light-prism"] .pad.selected {
-    background: #f6b59a;
+    box-shadow: 0 0 15px var(--pad-selected-glow);
 }
 
 .pad.active {
-    background: #582f13;
+    background: var(--pad-active-bg);
     border-color: var(--color-accent-green);
 }
 
 .pad.active.selected {
-    background: #794614;
+    background: var(--pad-active-selected-bg);
     border-color: var(--color-accent-green);
-    box-shadow: 0 0 15px #9946137c;
+    box-shadow: 0 0 15px var(--pad-active-selected-glow);
 }
 
 .pad.preview-playing {
-    box-shadow: 0 0 0 2px rgba(255, 166, 0, 0.65), 0 0 18px rgba(255, 166, 0, 0.28);
+    box-shadow: 0 0 0 2px var(--preview-ring), 0 0 18px var(--preview-fill);
 }
 
 .pad.disabled {
@@ -284,7 +296,7 @@ h1 {
 }
 
 .pad.drag-over {
-    background: #4a4a2a;
+    background: var(--drag-over-bg);
     border-color: var(--color-accent-yellow);
     border-style: dashed;
 }
@@ -342,12 +354,12 @@ h1 {
 
 .pad-preview-trigger:hover:not(:disabled) {
     border-color: var(--color-accent-bright-orange);
-    background: rgba(255, 166, 0, 0.16);
+    background: var(--preview-fill);
 }
 
 .pad.preview-playing .pad-preview-trigger {
     border-color: var(--color-accent-bright-orange);
-    background: rgba(255, 166, 0, 0.22);
+    background: color-mix(in srgb, var(--preview-fill) 100%, var(--preview-ring) 18%);
 }
 
 .pad-preview-trigger:disabled {
@@ -437,11 +449,11 @@ h1 {
 @keyframes blink-red {
     0%, 100% { 
         background-color: var(--color-accent-red);
-        box-shadow: 0 0 10px rgba(255, 94, 94, 0.5);
+        box-shadow: 0 0 10px var(--color-accent-red);
     }
     50% { 
-        background-color: #ff0000;
-        box-shadow: 0 0 20px rgb(255, 0, 0);
+        background-color: var(--color-accent-red);
+        box-shadow: 0 0 20px var(--color-accent-red);
     }
 }
 
@@ -717,7 +729,7 @@ h1 {
 }
 
 .sample-browser-filter-btn.active {
-    background: rgba(255, 166, 0, 0.14);
+    background: var(--preview-fill);
     border-color: var(--color-accent-bright-orange);
     color: var(--color-text-primary);
 }
@@ -899,7 +911,7 @@ h1 {
 .sample-browser-badge.is-live {
     border-color: var(--color-accent-bright-orange);
     color: var(--color-text-primary);
-    background: rgba(255, 166, 0, 0.18);
+    background: var(--preview-fill);
 }
 
 .sample-browser-details {
@@ -1134,7 +1146,7 @@ h1 {
 .select {
     border: 0;
     border-radius: var(--radius-sm);
-    background: #a35a2d;
+    background: var(--select-surface);
     color: #f2f1f1;
     font-size: 0.9em;
     cursor: pointer;
@@ -1158,7 +1170,7 @@ h1 {
 .select-dark {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    background: var(--color-bg-secondary);
+    background: var(--select-surface);
     color: var(--color-text-primary);
     font-size: 0.9em;
     cursor: pointer;
@@ -1168,8 +1180,14 @@ h1 {
     
 }
 
+@supports not (background: color-mix(in srgb, black 50%, white 50%)) {
+    .select-dark {
+        background: var(--select-surface);
+    }
+}
+
 .select-dark option {
-    background: var(--color-bg-secondary) !important;
+    background: color-mix(in srgb, var(--select-surface) 18%, var(--color-bg-secondary)) !important;
     color: var(--color-text-primary) !important;
     /* padding: var(--spacing-sm); */
     border-color: var(--color-accent-bright-orange);
@@ -1179,7 +1197,7 @@ h1 {
 /* Selected option (when dropdown is open) */
 .select-dark option:checked,
 .select-dark option[selected] {
-    background: var(--color-accent-orange) !important;  /* Change this color */
+    background: var(--select-option-selected) !important;
     color: var(--color-bg-primary) !important;
     font-weight: 600;
 }
@@ -1191,8 +1209,41 @@ h1 {
 
 
 .select-dark:hover:not(.disabled) {
-     background: var(--color-bg-tertiary);
+     background: var(--select-surface-hover);
     border-color: var(--color-accent-bright-orange);
+}
+
+.select:hover,
+.select:focus {
+    background: var(--select-surface-hover);
+}
+
+html {
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+}
+
+*::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+    border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 999px;
+    border: 2px solid var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+    background: var(--scrollbar-track);
 }
 
 /* ============================================
