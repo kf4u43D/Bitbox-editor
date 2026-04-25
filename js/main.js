@@ -326,7 +326,7 @@ function setupEventListeners() {
     document.getElementById('loadBtn').addEventListener('click', async () => {
         const openedBrowser = await window.BitboxerSampleBrowser?.openForPreset();
         if (!openedBrowser) {
-            window.BitboxerUtils.setStatus('Preset browser unavailable', 'error');
+            window.BitboxerUtils.setStatus('Preset browser unavailable. Use Chrome or Edge for local folder access.', 'error');
         }
     });
     
@@ -367,7 +367,7 @@ function setupEventListeners() {
 
         const openedBrowser = await window.BitboxerSampleBrowser?.openForPad(targetPad);
         if (!openedBrowser) {
-            window.BitboxerUtils.setStatus('Sample browser unavailable', 'error');
+            window.BitboxerUtils.setStatus('Sample browser unavailable. Use Chrome or Edge for local folder access.', 'error');
         }
     });
     
@@ -467,7 +467,7 @@ function setupEventListeners() {
         if (pad) {
             window.BitboxerSampleBrowser?.openForPad(pad).then((openedBrowser) => {
                 if (!openedBrowser) {
-                    window.BitboxerUtils.setStatus('Sample browser unavailable', 'error');
+                    window.BitboxerUtils.setStatus('Sample browser unavailable. Use Chrome or Edge for local folder access.', 'error');
                 }
             });
         } else {
@@ -492,7 +492,7 @@ function setupEventListeners() {
         if (currentEditingPad) {
             window.BitboxerSampleBrowser?.openForPad(currentEditingPad).then((openedBrowser) => {
                 if (!openedBrowser) {
-                    window.BitboxerUtils.setStatus('Sample browser unavailable', 'error');
+                    window.BitboxerUtils.setStatus('Sample browser unavailable. Use Chrome or Edge for local folder access.', 'error');
                 }
             });
             return;
