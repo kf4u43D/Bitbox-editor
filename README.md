@@ -4,10 +4,7 @@ Fork of `BartBral/Bitbox-editor` with BITBOXER-focused workflow and UI enhanceme
 
 ## Links
 
-- [Enhanced fork branch](https://github.com/kf4u43D/Bitbox-editor/tree/bitboxer-enhancements)
-- [Upstream editor demo](https://bartbral.github.io/Bitbox-editor/)
-
-Note: the upstream demo may not include the fork-only changes from `bitboxer-enhancements`.
+- [BITBOXER Enhanced]([https://github.com/kf4u43D/Bitbox-editor/tree/bitboxer-enhancements](https://kf4u43d.github.io/Bitbox-editor/BITBOXER_index.html)
 
 ## Main additions
 
@@ -106,26 +103,6 @@ The UI includes multiple themes, with `Dark Spectral` as the default fallback th
 - multisample folders when needed
 - placeholders / readme notes for missing files when applicable
 
-## Device modes
-
-- `Bitbox Micro`: 8-pad visual layout, EQ unavailable
-- `Bitbox mk2`: full 16-pad layout and full EQ access
-
-Greyed out controls are primarily a visual reminder. The underlying preset format remains shared.
-
-## Formats
-
-Supported import / export formats include:
-
-- XML
-- ZIP
-- WAV
-- SFZ
-- JSON pad exports
-
-## Browser support
-
-Recommended:
 
 - Chrome
 - Edge
