@@ -24,6 +24,26 @@ class WaveformRenderer {
         this.height = 0;
     }
 
+    getThemeColors() {
+        const rootStyles = getComputedStyle(document.documentElement);
+        return {
+            background: rootStyles.getPropertyValue('--color-bg-primary').trim() || '#1a1614',
+            waveform: rootStyles.getPropertyValue('--waveform-line').trim() || '#ffa600',
+            center: rootStyles.getPropertyValue('--waveform-center').trim() || '#4a4038',
+            text: rootStyles.getPropertyValue('--color-text-secondary').trim() || '#d0c2b9',
+            markerSample: rootStyles.getPropertyValue('--marker-sample').trim() || '#ff6b6b',
+            markerLoop: rootStyles.getPropertyValue('--marker-loop').trim() || '#7fb6ff',
+            markerSlice: rootStyles.getPropertyValue('--marker-slice').trim() || '#8fe388',
+            overlayAccent: rootStyles.getPropertyValue('--overlay-accent').trim() || '#ffb347',
+            beatGrid: rootStyles.getPropertyValue('--beat-grid').trim() || 'rgba(163, 90, 45, 0.5)',
+            beatGridSubtle: rootStyles.getPropertyValue('--beat-grid-subtle').trim() || 'rgba(163, 90, 45, 0.2)',
+            scrollbarTrack: rootStyles.getPropertyValue('--scrollbar-track').trim() || '#241d1a',
+            scrollbarThumb: rootStyles.getPropertyValue('--scrollbar-thumb').trim() || '#8d4d26',
+            scrollbarThumbHover: rootStyles.getPropertyValue('--scrollbar-thumb-hover').trim() || '#b36432',
+            border: rootStyles.getPropertyValue('--color-border').trim() || '#4a4038'
+        };
+    }
+
     setWaveformData(audioBuffer) {
         const channels = audioBuffer.numberOfChannels;
         const length = audioBuffer.length;
@@ -78,9 +98,10 @@ class WaveformRenderer {
 
         const { ctx, width, height, waveformData, zoom, scrollSample } = this;
         const { channels, length, channelData } = waveformData;
+        const themeColors = this.getThemeColors();
 
         // Clear canvas
-        ctx.fillStyle = '#1a1614';
+        ctx.fillStyle = themeColors.background;
         ctx.fillRect(0, 0, width, height);
 
         // Calculate visible sample range - INTEGER MATH
@@ -102,7 +123,7 @@ class WaveformRenderer {
             const data = channelData[ch];
             const yOffset = ch * channelHeight + channelHeight / 2;
 
-            ctx.strokeStyle = '#ffa600';
+            ctx.strokeStyle = themeColors.waveform;
             ctx.lineWidth = 1;
             ctx.beginPath();
 
@@ -148,7 +169,7 @@ class WaveformRenderer {
             ctx.stroke();
 
             // Draw center line
-            ctx.strokeStyle = '#4a4038';
+            ctx.strokeStyle = themeColors.center;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(0, yOffset);
@@ -156,7 +177,7 @@ class WaveformRenderer {
             ctx.stroke();
 
             // Draw channel label
-            ctx.fillStyle = '#d0c2b9';
+            ctx.fillStyle = themeColors.text;
             ctx.font = '10px monospace';
             ctx.fillText(channels === 1 ? 'MONO' : `CH ${ch + 1}`, 5, yOffset - channelHeight / 2 + 15);
         }
@@ -388,11 +409,12 @@ class MarkerController {
     constructor(renderer, audioEngine) {
         this.renderer = renderer;
         this.audioEngine = audioEngine;
+        const themeColors = this.renderer.getThemeColors();
         this.markers = {
-            start: { sample: 0, color: '#ff0000', label: ' START', snapZeroCross: true },
-            end: { sample: 0, color: '#ff0000', label: ' END', snapZeroCross: true },
-            loopStart: { sample: 0, color: '#4a9eff', label: ' LOOP START', snapZeroCross: true },
-            loopEnd: { sample: 0, color: '#4a9eff', label: ' LOOP END', snapZeroCross: true }
+            start: { sample: 0, color: themeColors.markerSample, label: ' START', snapZeroCross: true },
+            end: { sample: 0, color: themeColors.markerSample, label: ' END', snapZeroCross: true },
+            loopStart: { sample: 0, color: themeColors.markerLoop, label: ' LOOP START', snapZeroCross: true },
+            loopEnd: { sample: 0, color: themeColors.markerLoop, label: ' LOOP END', snapZeroCross: true }
         };
         this.dragging = null;
         this.sliceMarkers = []; // For slicer mode
@@ -482,6 +504,7 @@ class MarkerController {
     // Temporary Debug Code
     draw() {
         const { ctx, width, height } = this.renderer;
+        const themeColors = this.renderer.getThemeColors();
         
         // Don't draw if canvas width is invalid
         if (!width || width <= 0) {
@@ -544,7 +567,7 @@ class MarkerController {
                 const x = this.renderer.sampleToX(sample);
                 if (x < 0 || x > width) return;
             
-                ctx.strokeStyle = '#5eff5e';
+                ctx.strokeStyle = themeColors.markerSlice;
                 ctx.lineWidth = 1;
                 ctx.setLineDash([5, 5]);
                 ctx.beginPath();
@@ -554,7 +577,7 @@ class MarkerController {
                 ctx.setLineDash([]);
 
                 // Draw handle for slice markers too
-                ctx.fillStyle = '#5eff5e';
+                ctx.fillStyle = themeColors.markerSlice;
                 ctx.fillRect(x - 3, 0, 6, 15);
             });
         }
@@ -563,6 +586,7 @@ class MarkerController {
 
     drawGranularOverlay(padParams) {
         const { ctx, width, height } = this.renderer;
+        const themeColors = this.renderer.getThemeColors();
         if (!this.renderer.waveformData) return;
 
         const totalLength = this.renderer.waveformData.length;
@@ -594,14 +618,14 @@ class MarkerController {
         }
 
         // Draw grain window border
-        ctx.strokeStyle = '#ffea5e';
+        ctx.strokeStyle = themeColors.overlayAccent;
         ctx.lineWidth = 2;
         ctx.setLineDash([10, 5]);
         ctx.strokeRect(x1, 0, x2 - x1, height);
         ctx.setLineDash([]);
 
         // Draw grain window label
-        ctx.fillStyle = '#ffea5e';
+        ctx.fillStyle = themeColors.overlayAccent;
         ctx.font = '12px monospace';
         const grainPercent = (grainSourceWindow * 100).toFixed(0);
         ctx.fillText(`GRAIN WINDOW (${grainPercent}%)`, Math.max(5, x1 + 5), height - 10);
@@ -611,6 +635,7 @@ class MarkerController {
 
     drawClipBeatGrid(padParams, tempo) {
         const { ctx, width, height } = this.renderer;
+        const themeColors = this.renderer.getThemeColors();
         if (!this.renderer.waveformData) return;
 
         const totalLength = this.renderer.waveformData.length;
@@ -633,7 +658,7 @@ class MarkerController {
         const samplesPerBeat = totalLength / beatCount;
 
         // Draw beat grid lines
-        ctx.strokeStyle = 'rgba(74, 158, 255, 0.5)'; // Blue
+        ctx.strokeStyle = themeColors.beatGrid;
         ctx.lineWidth = 1;
         ctx.setLineDash([3, 3]);
 
@@ -651,7 +676,7 @@ class MarkerController {
 
             // Draw beat number
             if (i % 4 === 0 || beatCount <= 16) {
-                ctx.fillStyle = '#4a9eff';
+                ctx.fillStyle = themeColors.markerLoop;
                 ctx.font = '10px monospace';
                 ctx.fillText(`${i + 1}`, x + 3, height - 25);
             }
@@ -664,7 +689,7 @@ class MarkerController {
         const subdivisions = this.getSynctypeSubdivisions(synctype);
 
         if (subdivisions > 1) {
-            ctx.strokeStyle = 'rgba(74, 158, 255, 0.2)';
+            ctx.strokeStyle = themeColors.beatGridSubtle;
             ctx.lineWidth = 1;
 
             for (let beat = 0; beat < beatCount; beat++) {
@@ -683,7 +708,7 @@ class MarkerController {
         }
 
         // Draw beat count label
-        ctx.fillStyle = '#4a9eff';
+        ctx.fillStyle = themeColors.markerLoop;
         ctx.font = '12px monospace';
         const label = beatCount === parseInt(padParams.beatcount) 
             ? `${beatCount} BEATS` 
@@ -1168,11 +1193,17 @@ class ScrollZoomBar {
         this.dragStartScroll = 0;
         
         // Visual styling
-        this.colors = {
-            track: '#2a2420',
-            thumb: '#a35a2d',
-            thumbHover: '#ffa600',
-            border: '#4a4038'
+        this.colors = this.getThemeColors();
+    }
+
+    getThemeColors() {
+        const rootStyles = getComputedStyle(document.documentElement);
+        return {
+            track: rootStyles.getPropertyValue('--scrollbar-track').trim() || '#241d1a',
+            thumb: rootStyles.getPropertyValue('--scrollbar-thumb').trim() || '#8d4d26',
+            thumbHover: rootStyles.getPropertyValue('--scrollbar-thumb-hover').trim() || '#b36432',
+            border: rootStyles.getPropertyValue('--color-border').trim() || '#4a4038',
+            handle: rootStyles.getPropertyValue('--color-text-primary').trim() || '#ffffff'
         };
     }
     
@@ -1237,6 +1268,7 @@ class ScrollZoomBar {
         if (!this.ctx || this.width <= 0) return;
         
         const { ctx, width, height } = this;
+        this.colors = this.getThemeColors();
         
         // Clear
         ctx.fillStyle = this.colors.track;
@@ -1260,7 +1292,7 @@ class ScrollZoomBar {
         ctx.strokeRect(thumb.x + 0.5, 4.5, thumb.width - 1, height - 9);
         
         // Draw edge handles (visual indicators)
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = this.colors.handle;
         const handleWidth = 2;
         const handleHeight = 12;
         const handleY = (height - handleHeight) / 2;
@@ -1459,7 +1491,7 @@ class SampleEditor {
             // Clear canvas visually
             const ctx = this.renderer.ctx;
             if (ctx && this.renderer.width > 0 && this.renderer.height > 0) {
-                ctx.fillStyle = '#1a1614';
+                ctx.fillStyle = this.renderer.getThemeColors().background;
                 ctx.fillRect(0, 0, this.renderer.width, this.renderer.height);
             }
         }
@@ -2081,17 +2113,18 @@ class SampleEditor {
         if (this.selectionStart !== null && this.selectionEnd !== null &&
             !isNaN(this.selectionStart) && !isNaN(this.selectionEnd)) {
             const ctx = this.renderer.ctx;
+            const themeColors = this.renderer.getThemeColors();
             const x1 = this.renderer.sampleToX(this.selectionStart);
             const x2 = this.renderer.sampleToX(this.selectionEnd);
             const width = this.renderer.width;
             const height = this.renderer.height;
 
             // Draw selection highlight
-            ctx.fillStyle = 'rgba(74, 158, 255, 0.2)';
+            ctx.fillStyle = themeColors.beatGridSubtle;
             ctx.fillRect(x1, 0, x2 - x1, height);
 
             // Draw selection borders
-            ctx.strokeStyle = '#4a9eff';
+            ctx.strokeStyle = themeColors.markerLoop;
             ctx.lineWidth = 2;
             ctx.beginPath();
             ctx.moveTo(x1, 0);
@@ -2107,12 +2140,13 @@ class SampleEditor {
             if (!isNaN(currentSample) && currentSample >= 0) {
                 const x = this.renderer.sampleToX(currentSample);
                 const ctx = this.renderer.ctx;
+                const themeColors = this.renderer.getThemeColors();
                 const height = this.renderer.height;
                 const width = this.renderer.width;
 
                 // Only draw if within visible area (simple check)
                 if (x >= -10 && x <= width + 10) {
-                    ctx.strokeStyle = '#5eff5e';
+                    ctx.strokeStyle = themeColors.markerSlice;
                     ctx.lineWidth = 2;
                     ctx.beginPath();
                     ctx.moveTo(x, 0);

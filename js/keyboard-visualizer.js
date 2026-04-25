@@ -61,24 +61,96 @@ class KeyboardVisualizer {
             snapGuideKey: null
         };
 
-        // Colors
-        this.colors = {
-            whiteKeyAssigned: '#f0f0f0',
-            blackKeyAssigned: '#2a2a2a',
-            whiteKeyUnassigned: '#888',
-            blackKeyUnassigned: '#555',
-            whiteKeyBorder: '#999',
-            blackKeyBorder: '#000',
-            selected: '#ffa600',
-            selectedHover: '#ffb347',
-            velLayerBase: 'rgba(74, 158, 255, 0.6)',
-            velLayerSelected: 'rgba(255, 166, 0, 0.8)',
-            dragPreview: 'rgba(255, 166, 0, 0.4)',
-            snapGuide: 'rgba(255, 234, 94, 0.8)'
-        };
+        this.colors = this.getThemeColors();
 
         this.resize();
         this.setupEventListeners();
+        window.addEventListener('bitboxer:themechange', () => {
+            this.colors = this.getThemeColors();
+            this.render();
+        });
+    }
+
+    getCssVar(name, fallback) {
+        try {
+            const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+            return value || fallback;
+        } catch {
+            return fallback;
+        }
+    }
+
+    withAlpha(color, alpha) {
+        if (!color) return `rgba(0, 0, 0, ${alpha})`;
+
+        const normalized = color.trim();
+        if (normalized.startsWith('#')) {
+            const hex = normalized.slice(1);
+            const expanded = hex.length === 3
+                ? hex.split('').map((char) => char + char).join('')
+                : hex.slice(0, 6);
+
+            if (expanded.length === 6) {
+                const r = parseInt(expanded.slice(0, 2), 16);
+                const g = parseInt(expanded.slice(2, 4), 16);
+                const b = parseInt(expanded.slice(4, 6), 16);
+                return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+            }
+        }
+
+        const rgbMatch = normalized.match(/^rgba?\(([^)]+)\)$/i);
+        if (rgbMatch) {
+            const channels = rgbMatch[1].split(',').map((part) => part.trim()).slice(0, 3);
+            if (channels.length === 3) {
+                return `rgba(${channels.join(', ')}, ${alpha})`;
+            }
+        }
+
+        return color;
+    }
+
+    getThemeColors() {
+        const bgPrimary = this.getCssVar('--color-bg-primary', '#1a1614');
+        const bgSecondary = this.getCssVar('--color-bg-secondary', '#2a2420');
+        const border = this.getCssVar('--color-border', '#4a4038');
+        const textPrimary = this.getCssVar('--color-text-primary', '#e8ddd0');
+        const textSecondary = this.getCssVar('--color-text-secondary', '#d0c2b9');
+        const waveformLine = this.getCssVar('--waveform-line', '#7fb6ff');
+        const selected = this.getCssVar('--select-option-selected', '#ffa600');
+        const selectedHover = this.getCssVar('--color-accent-yellow', '#ffb347');
+        const snapGuide = this.getCssVar('--marker-slice', '#ffea5e');
+        const scrollbarTrack = this.getCssVar('--scrollbar-track', bgSecondary);
+        const scrollbarThumb = this.getCssVar('--scrollbar-thumb', '#a35a2d');
+        const scrollbarThumbHover = this.getCssVar('--scrollbar-thumb-hover', '#ffb347');
+
+        return {
+            canvasBg: bgPrimary,
+            scrollbarTrack,
+            scrollbarThumb,
+            scrollbarThumbHover,
+            scrollbarBorder: border,
+            scrollbarHandle: this.withAlpha(textPrimary, 0.88),
+            whiteKeyAssigned: '#f3efe9',
+            blackKeyAssigned: this.withAlpha(bgPrimary, 0.92),
+            whiteKeyUnassigned: this.withAlpha(textSecondary, 0.52),
+            blackKeyUnassigned: this.withAlpha(border, 0.7),
+            whiteKeyBorder: this.withAlpha(border, 0.9),
+            blackKeyBorder: this.withAlpha(bgPrimary, 0.96),
+            whiteKeyHover: '#ffffff',
+            blackKeyHover: this.withAlpha(bgPrimary, 0.72),
+            unassignedWhiteHover: this.withAlpha(textSecondary, 0.68),
+            unassignedBlackHover: this.withAlpha(border, 0.82),
+            selected,
+            selectedHover,
+            selectedText: bgPrimary,
+            layerStroke: this.withAlpha(waveformLine, 0.82),
+            velLayerBase: this.withAlpha(waveformLine, 0.56),
+            velLayerSelected: this.withAlpha(selected, 0.74),
+            velLayerText: textPrimary,
+            dragPreview: this.withAlpha(selected, 0.34),
+            snapGuide: this.withAlpha(snapGuide, 0.84),
+            labelText: textSecondary
+        };
     }
 
     resize() {
@@ -172,12 +244,13 @@ class KeyboardVisualizer {
         this.hoveredKey = null;
 
         if (this.ctx && this.width > 0 && this.height > 0) {
-            this.ctx.fillStyle = '#1a1614';
+            this.colors = this.getThemeColors();
+            this.ctx.fillStyle = this.colors.canvasBg;
             this.ctx.fillRect(0, 0, this.width, this.height);
         }
 
         if (this.scrollCtx) {
-            this.scrollCtx.fillStyle = '#2a2420';
+            this.scrollCtx.fillStyle = this.colors.scrollbarTrack;
             this.scrollCtx.fillRect(0, 0, this.width, 30);
         }
     }
@@ -186,8 +259,9 @@ class KeyboardVisualizer {
         if (!this.ctx || this.width <= 0) return;
 
         const { ctx, width, height } = this;
+        this.colors = this.getThemeColors();
 
-        ctx.fillStyle = '#1a1614';
+        ctx.fillStyle = this.colors.canvasBg;
         ctx.fillRect(0, 0, width, height);
 
         const effectiveKeyWidth = this.keyWidth * this.zoom;
@@ -219,9 +293,9 @@ class KeyboardVisualizer {
             const hasAssignment = this.getAssetsForKey(midi).length > 0;
 
             if (hasAssignment) {
-                ctx.fillStyle = isHovered ? '#ffffff' : this.colors.whiteKeyAssigned;
+                ctx.fillStyle = isHovered ? this.colors.whiteKeyHover : this.colors.whiteKeyAssigned;
             } else {
-                ctx.fillStyle = isHovered ? '#aaa' : this.colors.whiteKeyUnassigned;
+                ctx.fillStyle = isHovered ? this.colors.unassignedWhiteHover : this.colors.whiteKeyUnassigned;
             }
             ctx.fillRect(x, 0, effectiveKeyWidth - 1, keyHeight);
 
@@ -241,9 +315,9 @@ class KeyboardVisualizer {
             const hasAssignment = this.getAssetsForKey(midi).length > 0;
 
             if (hasAssignment) {
-                ctx.fillStyle = isHovered ? '#444' : this.colors.blackKeyAssigned;
+                ctx.fillStyle = isHovered ? this.colors.blackKeyHover : this.colors.blackKeyAssigned;
             } else {
-                ctx.fillStyle = isHovered ? '#777' : this.colors.blackKeyUnassigned;
+                ctx.fillStyle = isHovered ? this.colors.unassignedBlackHover : this.colors.blackKeyUnassigned;
             }
             ctx.fillRect(x, 0, effectiveKeyWidth - 1, blackKeyHeight);
 
@@ -288,13 +362,13 @@ class KeyboardVisualizer {
             ctx.fillRect(startX, y, width, velLayerHeight - 2);
             ctx.globalAlpha = 1.0;
 
-            ctx.strokeStyle = isSelected ? '#ffa600' : 'rgba(74, 158, 255, 0.8)';
+            ctx.strokeStyle = isSelected ? this.colors.selected : this.colors.layerStroke;
             ctx.lineWidth = isSelected ? 2 : 1;
             ctx.strokeRect(startX, y, width, velLayerHeight - 2);
 
             if (width > 50) {
                 const sampleName = asset.filename.split(/[/\\]/).pop().replace('.wav', '');
-                ctx.fillStyle = isSelected ? '#000' : '#fff';
+                ctx.fillStyle = isSelected ? this.colors.selectedText : this.colors.velLayerText;
                 ctx.font = '10px monospace';
                 ctx.textAlign = 'left';
                 ctx.fillText(sampleName.substring(0, 20), startX + 4, y + 16);
@@ -326,13 +400,13 @@ class KeyboardVisualizer {
         ctx.fillStyle = this.colors.dragPreview;
         ctx.fillRect(startX, y, width, velLayerHeight - 2);
 
-        ctx.strokeStyle = '#ffa600';
+        ctx.strokeStyle = this.colors.selected;
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 5]);
         ctx.strokeRect(startX, y, width, velLayerHeight - 2);
         ctx.setLineDash([]);
 
-        ctx.fillStyle = '#ffa600';
+        ctx.fillStyle = this.colors.selected;
         ctx.font = 'bold 11px monospace';
         ctx.textAlign = 'center';
         const rangeText = `${this.midiToNoteName(previewKeyLo)} - ${this.midiToNoteName(previewKeyHi)}`;
@@ -360,7 +434,7 @@ class KeyboardVisualizer {
     drawLabels() {
         const { ctx, keyWidth, keyHeight } = this;
 
-        ctx.fillStyle = '#d0c2b9';
+        ctx.fillStyle = this.colors.labelText;
         ctx.font = '10px monospace';
         ctx.textAlign = 'center';
 
@@ -381,7 +455,7 @@ class KeyboardVisualizer {
         const { scrollCtx, width, maxScroll, scrollPos } = this;
         const height = 30;
 
-        scrollCtx.fillStyle = '#2a2420';
+        scrollCtx.fillStyle = this.colors.scrollbarTrack;
         scrollCtx.fillRect(0, 0, width, height);
 
         const effectiveKeyWidth = this.keyWidth * this.zoom;
@@ -395,14 +469,14 @@ class KeyboardVisualizer {
         const scrollRatio = maxScroll > 0 ? (scrollPos / maxScroll) : 0;
         const thumbX = scrollRatio * maxThumbScroll;
 
-        scrollCtx.fillStyle = '#a35a2d';
+        scrollCtx.fillStyle = this.colors.scrollbarThumb;
         scrollCtx.fillRect(thumbX, 4, thumbWidth, height - 8);
 
-        scrollCtx.strokeStyle = '#4a4038';
+        scrollCtx.strokeStyle = this.colors.scrollbarBorder;
         scrollCtx.lineWidth = 1;
         scrollCtx.strokeRect(thumbX + 0.5, 4.5, thumbWidth - 1, height - 9);
 
-        scrollCtx.fillStyle = '#fff';
+        scrollCtx.fillStyle = this.colors.scrollbarHandle;
         const handleWidth = 2;
         const handleHeight = 12;
         const handleY = (height - handleHeight) / 2;

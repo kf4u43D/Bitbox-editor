@@ -642,6 +642,7 @@
 
         async chooseWorkingFolder() {
             if (!window.showDirectoryPicker) {
+                window.BitboxerUtils?.setStatus('Sample browser requires Chrome or Edge for local folder access.', 'error');
                 return false;
             }
 
@@ -1168,6 +1169,7 @@
             }
 
             if (!window.showDirectoryPicker) {
+                window.BitboxerUtils?.setStatus('Sample browser requires Chrome or Edge for local folder access.', 'error');
                 return false;
             }
 
