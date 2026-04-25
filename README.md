@@ -4,7 +4,7 @@ Fork of `BartBral/Bitbox-editor` with BITBOXER-focused workflow and UI enhanceme
 
 ## Links
 
-- [BITBOXER Enhanced]([https://github.com/kf4u43D/Bitbox-editor/tree/bitboxer-enhancements](https://kf4u43d.github.io/Bitbox-editor/BITBOXER_index.html)
+- [BITBOXER Enhanced][https://github.com/kf4u43D/Bitbox-editor/tree/bitboxer-enhancements](https://kf4u43d.github.io/Bitbox-editor/BITBOXER_index.html)
 
 ## Main additions
 
