@@ -409,17 +409,44 @@ class MarkerController {
     constructor(renderer, audioEngine) {
         this.renderer = renderer;
         this.audioEngine = audioEngine;
-        const themeColors = this.renderer.getThemeColors();
         this.markers = {
-            start: { sample: 0, color: themeColors.markerSample, label: ' START', snapZeroCross: true },
-            end: { sample: 0, color: themeColors.markerSample, label: ' END', snapZeroCross: true },
-            loopStart: { sample: 0, color: themeColors.markerLoop, label: ' LOOP START', snapZeroCross: true },
-            loopEnd: { sample: 0, color: themeColors.markerLoop, label: ' LOOP END', snapZeroCross: true }
+            start: { sample: 0, color: '#ff6b6b', label: ' START', snapZeroCross: true, hidden: false },
+            end: { sample: 0, color: '#ff6b6b', label: ' END', snapZeroCross: true, hidden: false },
+            loopStart: { sample: 0, color: '#7fb6ff', label: ' LOOP START', snapZeroCross: true, hidden: false },
+            loopEnd: { sample: 0, color: '#7fb6ff', label: ' LOOP END', snapZeroCross: true, hidden: false }
         };
         this.dragging = null;
         this.sliceMarkers = []; // For slicer mode
         this.isUpdatingFromDrag = false;
         this.snapToZeroCrossingEnabled = true;  // Default ON
+        this.customLoopColor = null;
+    }
+
+    applyThemeColors(options = {}) {
+        const themeColors = this.renderer.getThemeColors();
+        if (Object.prototype.hasOwnProperty.call(options, 'loopColor')) {
+            this.customLoopColor = options.loopColor;
+        }
+        const {
+            hideSampleMarkers = this.markers.start.hidden,
+            loopColor = this.customLoopColor || themeColors.markerLoop
+        } = options;
+
+        this.markers.start.color = themeColors.markerSample;
+        this.markers.start.label = ' START';
+        this.markers.start.hidden = hideSampleMarkers;
+
+        this.markers.end.color = themeColors.markerSample;
+        this.markers.end.label = ' END';
+        this.markers.end.hidden = hideSampleMarkers;
+
+        this.markers.loopStart.color = loopColor;
+        this.markers.loopStart.label = ' LOOP START';
+        this.markers.loopStart.hidden = false;
+
+        this.markers.loopEnd.color = loopColor;
+        this.markers.loopEnd.label = ' LOOP END';
+        this.markers.loopEnd.hidden = false;
     }
 
     setMarker(name, sample) {
@@ -526,7 +553,9 @@ class MarkerController {
 
         // Draw standard markers (start, end, loopStart, loopEnd) only in appropriate modes
         if (showStandardMarkers) {
+            this.applyThemeColors();
             Object.entries(this.markers).forEach(([name, marker]) => {
+                if (marker.hidden) return;
                 const x = this.renderer.sampleToX(marker.sample);
             
                 if (x < 0 || x > width) return;
@@ -1495,6 +1524,21 @@ class SampleEditor {
                 ctx.fillRect(0, 0, this.renderer.width, this.renderer.height);
             }
         }
+
+        if (this.markerController) {
+            this.markerController.sliceMarkers = [];
+            this.markerController.customLoopColor = null;
+            this.markerController.applyThemeColors({
+                hideSampleMarkers: false
+            });
+            Object.values(this.markerController.markers).forEach((marker) => {
+                marker.sample = 0;
+                marker.hidden = false;
+            });
+        }
+
+        this.selectionStart = null;
+        this.selectionEnd = null;
 
         // Stop animations
         if (this.animationFrame) {

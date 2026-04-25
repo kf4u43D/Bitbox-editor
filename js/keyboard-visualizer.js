@@ -31,7 +31,8 @@ class KeyboardVisualizer {
         // Configuration
         this.keyWidth = 16;
         this.keyHeight = 100;
-        this.velLayerHeight = 25;
+        this.velocityPanelHeight = 140;
+        this.velocityEdgeThreshold = 10;
         this.minKey = 0;
         this.maxKey = 127;
         this.totalKeys = this.maxKey - this.minKey + 1;
@@ -50,12 +51,20 @@ class KeyboardVisualizer {
             type: null,
             asset: null,
             startX: 0,
+            startY: 0,
             startKeyLo: 0,
             startKeyHi: 0,
+            startRootNote: 0,
+            startVelLo: 0,
+            startVelHi: 0,
             currentKeyLo: 0,
             currentKeyHi: 0,
+            currentVelLo: 0,
+            currentVelHi: 0,
             previewKeyLo: 0,
             previewKeyHi: 0,
+            previewVelLo: 0,
+            previewVelHi: 0,
             neighborLeft: null,
             neighborRight: null,
             snapGuideKey: null
@@ -163,8 +172,7 @@ class KeyboardVisualizer {
         const dpr = window.devicePixelRatio || 1;
 
         this.width = container.offsetWidth;
-        const numLayers = this.calculateVelocityLayers();
-        this.height = this.keyHeight + (numLayers * this.velLayerHeight);
+        this.height = this.keyHeight + this.velocityPanelHeight;
 
         if (this.width <= 0 || this.height <= 0) {
             console.warn(`KeyboardVisualizer: Invalid dimensions (${this.width}x${this.height})`);
@@ -328,50 +336,55 @@ class KeyboardVisualizer {
     }
 
     drawVelocityLayers() {
-        const { ctx, keyHeight, velLayerHeight } = this;
+        const { ctx, keyHeight, velocityPanelHeight } = this;
+        const panelTop = keyHeight;
+        const panelBottom = keyHeight + velocityPanelHeight;
 
-        this.assetCells.forEach((asset, assetIndex) => {
-            const loKey = parseInt(asset.params.keyrangebottom);
-            const hiKey = parseInt(asset.params.keyrangetop);
+        ctx.fillStyle = this.withAlpha(this.colors.scrollbarTrack, 0.32);
+        ctx.fillRect(0, panelTop, this.width, velocityPanelHeight);
 
-            let layerIndex = 0;
-            for (let i = 0; i < assetIndex; i++) {
-                const otherAsset = this.assetCells[i];
-                const otherLo = parseInt(otherAsset.params.keyrangebottom);
-                const otherHi = parseInt(otherAsset.params.keyrangetop);
+        [127, 96, 64, 32, 0].forEach((velocity) => {
+            const y = this.velocityToY(velocity);
+            ctx.strokeStyle = this.withAlpha(this.colors.layerStroke, velocity === 0 || velocity === 127 ? 0.45 : 0.22);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(this.width, y);
+            ctx.stroke();
 
-                if (!(hiKey < otherLo || loKey > otherHi)) {
-                    layerIndex++;
-                }
+            ctx.fillStyle = this.colors.labelText;
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'right';
+            ctx.fillText(`${velocity}`, this.width - 6, Math.max(panelTop + 10, y - 4));
+        });
+
+        this.assetCells.forEach((asset) => {
+            const rect = this.getAssetVelocityRect(asset);
+            if (!rect || rect.width <= 0 || rect.bottom <= panelTop || rect.top >= panelBottom) {
+                return;
             }
-
-            if (layerIndex >= 16) return;
-
-            const y = keyHeight + (layerIndex * velLayerHeight);
-            const startX = this.midiToX(loKey);
-            const endX = this.midiToX(hiKey + 1);
-            const width = endX - startX;
 
             const isSelected = (this.selectedAsset === asset);
             const isDragging = (this.dragState.active && this.dragState.asset === asset);
 
             ctx.fillStyle = isSelected ? this.colors.velLayerSelected : this.colors.velLayerBase;
-            if (isDragging) {
-                ctx.globalAlpha = 0.3;
-            }
-            ctx.fillRect(startX, y, width, velLayerHeight - 2);
+            ctx.globalAlpha = isDragging ? 0.3 : 0.88;
+            ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
             ctx.globalAlpha = 1.0;
 
             ctx.strokeStyle = isSelected ? this.colors.selected : this.colors.layerStroke;
             ctx.lineWidth = isSelected ? 2 : 1;
-            ctx.strokeRect(startX, y, width, velLayerHeight - 2);
+            ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
 
-            if (width > 50) {
+            if (rect.width > 72 && rect.height > 18) {
                 const sampleName = asset.filename.split(/[/\\]/).pop().replace('.wav', '');
+                const loVel = parseInt(asset.params.velrangebottom, 10) || 0;
+                const hiVel = parseInt(asset.params.velrangetop, 10) || 127;
                 ctx.fillStyle = isSelected ? this.colors.selectedText : this.colors.velLayerText;
                 ctx.font = '10px monospace';
                 ctx.textAlign = 'left';
-                ctx.fillText(sampleName.substring(0, 20), startX + 4, y + 16);
+                ctx.fillText(sampleName.substring(0, 18), rect.x + 4, rect.y + 14);
+                ctx.fillText(`V ${loVel}-${hiVel}`, rect.x + 4, rect.y + Math.min(rect.height - 4, 26));
             }
         });
 
@@ -387,30 +400,31 @@ class KeyboardVisualizer {
             return;
         }
 
-        const { ctx, keyHeight, velLayerHeight } = this;
+        const { ctx } = this;
         const { asset, previewKeyLo, previewKeyHi, snapGuideKey } = this.dragState;
-
-        const layerIndex = this.getAssetLayerIndex(asset);
-        const y = keyHeight + (layerIndex * velLayerHeight);
+        const rect = this.getAssetVelocityRect(asset, previewKeyLo, previewKeyHi);
+        if (!rect) {
+            return;
+        }
 
         const startX = this.midiToX(previewKeyLo);
         const endX = this.midiToX(previewKeyHi + 1);
         const width = endX - startX;
 
         ctx.fillStyle = this.colors.dragPreview;
-        ctx.fillRect(startX, y, width, velLayerHeight - 2);
+        ctx.fillRect(startX, rect.y, width, rect.height);
 
         ctx.strokeStyle = this.colors.selected;
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 5]);
-        ctx.strokeRect(startX, y, width, velLayerHeight - 2);
+        ctx.strokeRect(startX, rect.y, width, rect.height);
         ctx.setLineDash([]);
 
         ctx.fillStyle = this.colors.selected;
         ctx.font = 'bold 11px monospace';
         ctx.textAlign = 'center';
         const rangeText = `${this.midiToNoteName(previewKeyLo)} - ${this.midiToNoteName(previewKeyHi)}`;
-        ctx.fillText(rangeText, startX + width / 2, y + 16);
+        ctx.fillText(rangeText, startX + width / 2, rect.y + Math.min(rect.height - 6, 16));
 
         if (snapGuideKey !== null) {
             const guideX = this.midiToX(snapGuideKey);
@@ -494,92 +508,19 @@ class KeyboardVisualizer {
     detectHoverTarget(mouseX, mouseY) {
         if (mouseY < this.keyHeight) return null;
 
-        const layerY = mouseY - this.keyHeight;
-        const midi = this.xToMidi(mouseX);
-
-        const threshold = 15;
-
         for (const asset of this.assetCells) {
-            const loKey = parseInt(asset.params.keyrangebottom);
-            const hiKey = parseInt(asset.params.keyrangetop);
+            const rect = this.getAssetVelocityRect(asset);
+            if (!rect) continue;
 
-            if (midi >= loKey && midi <= hiKey) {
-                const layerIndex = this.getAssetLayerIndex(asset);
-                const layerTop = layerIndex * this.velLayerHeight;
-                const layerBottom = layerTop + this.velLayerHeight;
-
-                if (layerY >= layerTop && layerY < layerBottom) {
-                    const leftEdgeX = this.midiToX(loKey);
-                    const rightEdgeX = this.midiToX(hiKey + 1);
-
-                    if (Math.abs(mouseX - leftEdgeX) < threshold) {
-                        return { type: 'edge-left', asset, edge: 'left' };
-                    } else if (Math.abs(mouseX - rightEdgeX) < threshold) {
-                        return { type: 'edge-right', asset, edge: 'right' };
-                    } else {
-                        return { type: 'body', asset };
-                    }
-                }
+            const isInsideX = mouseX >= rect.x && mouseX <= (rect.x + rect.width);
+            const isInsideY = mouseY >= rect.y && mouseY <= (rect.y + rect.height);
+            if (!isInsideX || !isInsideY) {
+                continue;
             }
+            return { type: 'body', asset };
         }
 
         return null;
-    }
-
-    getAssetLayerIndex(targetAsset) {
-        let layerIndex = 0;
-
-        for (let i = 0; i < this.assetCells.length; i++) {
-            const asset = this.assetCells[i];
-            if (asset === targetAsset) break;
-
-            const otherLo = parseInt(asset.params.keyrangebottom);
-            const otherHi = parseInt(asset.params.keyrangetop);
-            const targetLo = parseInt(targetAsset.params.keyrangebottom);
-            const targetHi = parseInt(targetAsset.params.keyrangetop);
-
-            if (!(targetHi < otherLo || targetLo > otherHi)) {
-                layerIndex++;
-            }
-        }
-
-        return Math.min(layerIndex, 15);
-    }
-
-    findNeighbors(asset) {
-        const loVel = parseInt(asset.params.velrangebottom);
-        const hiVel = parseInt(asset.params.velrangetop);
-        const loKey = parseInt(asset.params.keyrangebottom);
-        const hiKey = parseInt(asset.params.keyrangetop);
-
-        let leftNeighbor = null;
-        let rightNeighbor = null;
-
-        for (const other of this.assetCells) {
-            if (other === asset) continue;
-
-            const otherLoVel = parseInt(other.params.velrangebottom);
-            const otherHiVel = parseInt(other.params.velrangetop);
-            const otherLoKey = parseInt(other.params.keyrangebottom);
-            const otherHiKey = parseInt(other.params.keyrangetop);
-
-            const velOverlap = !(hiVel < otherLoVel || loVel > otherHiVel);
-            if (!velOverlap) continue;
-
-            if (otherHiKey < loKey) {
-                if (!leftNeighbor || otherHiKey > parseInt(leftNeighbor.params.keyrangetop)) {
-                    leftNeighbor = other;
-                }
-            }
-
-            if (otherLoKey > hiKey) {
-                if (!rightNeighbor || otherLoKey < parseInt(rightNeighbor.params.keyrangebottom)) {
-                    rightNeighbor = other;
-                }
-            }
-        }
-
-        return { left: leftNeighbor, right: rightNeighbor };
     }
 
     startDrag(mouseX, mouseY, target) {
@@ -592,121 +533,81 @@ class KeyboardVisualizer {
         this.dragState.type = target.type;
         this.dragState.asset = target.asset;
         this.dragState.startX = mouseX;
+        this.dragState.startY = mouseY;
 
         const loKey = parseInt(target.asset.params.keyrangebottom);
         const hiKey = parseInt(target.asset.params.keyrangetop);
+        const rootNote = parseInt(target.asset.params.rootnote);
+        const loVel = parseInt(target.asset.params.velrangebottom);
+        const hiVel = parseInt(target.asset.params.velrangetop);
 
         this.dragState.startKeyLo = loKey;
         this.dragState.startKeyHi = hiKey;
+        this.dragState.startRootNote = Number.isNaN(rootNote) ? loKey : rootNote;
+        this.dragState.startVelLo = loVel;
+        this.dragState.startVelHi = hiVel;
         this.dragState.currentKeyLo = loKey;
         this.dragState.currentKeyHi = hiKey;
+        this.dragState.currentVelLo = loVel;
+        this.dragState.currentVelHi = hiVel;
         this.dragState.previewKeyLo = loKey;
         this.dragState.previewKeyHi = hiKey;
-
-        const neighbors = this.findNeighbors(target.asset);
-        this.dragState.neighborLeft = neighbors.left;
-        this.dragState.neighborRight = neighbors.right;
+        this.dragState.previewVelLo = loVel;
+        this.dragState.previewVelHi = hiVel;
 
         console.log(`Started drag: ${this.dragState.type}`, {
-            keys: `${loKey}-${hiKey}`,
-            leftNeighbor: neighbors.left ? parseInt(neighbors.left.params.keyrangetop) : 'none',
-            rightNeighbor: neighbors.right ? parseInt(neighbors.right.params.keyrangebottom) : 'none'
+            keys: `${loKey}-${hiKey}`
         });
     }
 
-    updateDrag(mouseX) {
+    updateDrag(mouseX, mouseY = this.dragState.startY) {
         if (!this.dragState.active) return;
 
-        const { type, asset, startX, startKeyLo, startKeyHi, neighborLeft, neighborRight } = this.dragState;
+        const { type, asset, startX, startY, startKeyLo, startKeyHi, startRootNote, startVelLo, startVelHi } = this.dragState;
         const currentMidi = this.xToMidi(mouseX);
         const deltaMidi = currentMidi - this.xToMidi(startX);
+        const deltaY = mouseY - startY;
 
         let newKeyLo = startKeyLo;
         let newKeyHi = startKeyHi;
-        let snapGuideKey = null;
+        let newVelLo = startVelLo;
+        let newVelHi = startVelHi;
 
-        if (type === 'edge-left') {
-            newKeyLo = Math.max(0, Math.min(127, startKeyLo + deltaMidi));
-
-            if (newKeyLo >= startKeyHi) {
-                newKeyLo = startKeyHi;
-            }
-
-            if (neighborLeft) {
-                const neighborRootNote = parseInt(neighborLeft.params.rootnote);
-                const neighborHi = parseInt(neighborLeft.params.keyrangetop);
-                const minAllowed = neighborHi + 1;
-
-                if (newKeyLo <= minAllowed) {
-                    newKeyLo = minAllowed;
-                    snapGuideKey = neighborRootNote;
-                }
-            }
-
-            newKeyHi = startKeyHi;
-
-        } else if (type === 'edge-right') {
-            newKeyHi = Math.max(0, Math.min(127, startKeyHi + deltaMidi));
-
-            if (newKeyHi <= startKeyLo) {
-                newKeyHi = startKeyLo;
-            }
-
-            if (neighborRight) {
-                const neighborRootNote = parseInt(neighborRight.params.rootnote);
-                const neighborLo = parseInt(neighborRight.params.keyrangebottom);
-                const maxAllowed = neighborLo - 1;
-
-                if (newKeyHi >= maxAllowed) {
-                    newKeyHi = maxAllowed;
-                    snapGuideKey = neighborRootNote;
-                }
-            }
-
-            newKeyLo = startKeyLo;
-
-        } else if (type === 'body') {
+        if (type === 'body') {
             const zoneWidth = startKeyHi - startKeyLo;
             newKeyLo = Math.max(0, Math.min(127 - zoneWidth, startKeyLo + deltaMidi));
             newKeyHi = Math.min(127, newKeyLo + zoneWidth); // CLAMP to 127
 
-            if (neighborLeft) {
-                const neighborRootNote = parseInt(neighborLeft.params.rootnote);
-                const neighborHi = parseInt(neighborLeft.params.keyrangetop);
-                const minAllowed = neighborHi + 1;
-
-                if (newKeyLo <= minAllowed) {
-                    newKeyLo = minAllowed;
-                    newKeyHi = newKeyLo + zoneWidth;
-                    snapGuideKey = neighborRootNote;
-                }
-            }
-
-            if (neighborRight) {
-                const neighborRootNote = parseInt(neighborRight.params.rootnote);
-                const neighborLo = parseInt(neighborRight.params.keyrangebottom);
-                const maxAllowed = neighborLo - 1;
-
-                if (newKeyHi >= maxAllowed) {
-                    newKeyHi = maxAllowed;
-                    newKeyLo = newKeyHi - zoneWidth;
-                    snapGuideKey = neighborRootNote;
-                }
-            }
+            const velWidth = startVelHi - startVelLo;
+            const velocityDelta = Math.round((-deltaY / this.velocityPanelHeight) * 127);
+            newVelLo = Math.max(0, Math.min(127 - velWidth, startVelLo + velocityDelta));
+            newVelHi = Math.min(127, newVelLo + velWidth);
         }
 
         // CLAMP all values to 0-127 before storing
         newKeyLo = Math.max(0, Math.min(127, newKeyLo));
         newKeyHi = Math.max(0, Math.min(127, newKeyHi));
+        newVelLo = Math.max(0, Math.min(127, newVelLo));
+        newVelHi = Math.max(newVelLo, Math.min(127, newVelHi));
         
         this.dragState.currentKeyLo = newKeyLo;
         this.dragState.currentKeyHi = newKeyHi;
+        this.dragState.currentVelLo = newVelLo;
+        this.dragState.currentVelHi = newVelHi;
         this.dragState.previewKeyLo = newKeyLo;
         this.dragState.previewKeyHi = newKeyHi;
-        this.dragState.snapGuideKey = snapGuideKey;
+        this.dragState.previewVelLo = newVelLo;
+        this.dragState.previewVelHi = newVelHi;
+        this.dragState.snapGuideKey = null;
         
         asset.params.keyrangebottom = newKeyLo.toString();
         asset.params.keyrangetop = newKeyHi.toString();
+        asset.params.velrangebottom = newVelLo.toString();
+        asset.params.velrangetop = newVelHi.toString();
+        if (type === 'body') {
+            const shiftedRoot = Math.max(0, Math.min(127, startRootNote + deltaMidi));
+            asset.params.rootnote = shiftedRoot.toString();
+        }
         
         this.syncDropdownsFromAsset(asset);
         
@@ -725,10 +626,15 @@ class KeyboardVisualizer {
         // CLAMP to valid MIDI range before saving
         let finalKeyLo = Math.max(0, Math.min(127, this.dragState.currentKeyLo));
         let finalKeyHi = Math.max(0, Math.min(127, this.dragState.currentKeyHi));
+        let finalVelLo = Math.max(0, Math.min(127, this.dragState.currentVelLo));
+        let finalVelHi = Math.max(0, Math.min(127, this.dragState.currentVelHi));
     
         // Ensure keyHi >= keyLo
         if (finalKeyHi < finalKeyLo) {
             finalKeyHi = finalKeyLo;
+        }
+        if (finalVelHi < finalVelLo) {
+            finalVelHi = finalVelLo;
         }
 
         console.log(`Ended drag: ${this.dragState.type}`, {
@@ -739,6 +645,15 @@ class KeyboardVisualizer {
         if (draggedAsset) {
             draggedAsset.params.keyrangebottom = finalKeyLo.toString();
             draggedAsset.params.keyrangetop = finalKeyHi.toString();
+            draggedAsset.params.velrangebottom = finalVelLo.toString();
+            draggedAsset.params.velrangetop = finalVelHi.toString();
+            if (this.dragState.type === 'body') {
+                const startRoot = parseInt(draggedAsset.params.rootnote, 10);
+                const rootFromCurrent = Number.isNaN(startRoot)
+                    ? finalKeyLo
+                    : Math.max(0, Math.min(127, startRoot));
+                draggedAsset.params.rootnote = rootFromCurrent.toString();
+            }
         }
 
         // Reset drag state
@@ -747,12 +662,20 @@ class KeyboardVisualizer {
             type: null,
             asset: null,
             startX: 0,
+            startY: 0,
             startKeyLo: 0,
             startKeyHi: 0,
+            startRootNote: 0,
+            startVelLo: 0,
+            startVelHi: 0,
             currentKeyLo: 0,
             currentKeyHi: 0,
+            currentVelLo: 0,
+            currentVelHi: 0,
             previewKeyLo: 0,
             previewKeyHi: 0,
+            previewVelLo: 0,
+            previewVelHi: 0,
             neighborLeft: null,
             neighborRight: null,
             snapGuideKey: null
@@ -770,15 +693,52 @@ class KeyboardVisualizer {
         const rootNoteDropdown = document.getElementById('multiRootNote');
         const keyLoDropdown = document.getElementById('multiKeyLo');
         const keyHiDropdown = document.getElementById('multiKeyHi');
+        const velLoDropdown = document.getElementById('multiVelLo');
+        const velHiDropdown = document.getElementById('multiVelHi');
         
         if (rootNoteDropdown) rootNoteDropdown.value = rootNote.toString();
         if (keyLoDropdown) keyLoDropdown.value = loKey.toString();
         if (keyHiDropdown) keyHiDropdown.value = hiKey.toString();
+        if (velLoDropdown) velLoDropdown.value = asset.params.velrangebottom;
+        if (velHiDropdown) velHiDropdown.value = asset.params.velrangetop;
         } else {
             console.log('❌ Condition failed - dropdowns NOT updated');
         }
     }
 
+
+    velocityToY(velocity) {
+        const clamped = Math.max(0, Math.min(127, parseInt(velocity, 10) || 0));
+        const ratio = (127 - clamped) / 127;
+        return this.keyHeight + (ratio * this.velocityPanelHeight);
+    }
+
+    getAssetVelocityRect(asset, overrideLo = null, overrideHi = null) {
+        if (!asset?.params) {
+            return null;
+        }
+
+        const loKey = Math.max(0, Math.min(127, overrideLo ?? (parseInt(asset.params.keyrangebottom, 10) || 0)));
+        const hiKey = Math.max(loKey, Math.min(127, overrideHi ?? (parseInt(asset.params.keyrangetop, 10) || loKey)));
+        const loVel = Math.max(0, Math.min(127, parseInt(asset.params.velrangebottom, 10) || 0));
+        const hiVel = Math.max(loVel, Math.min(127, parseInt(asset.params.velrangetop, 10) || loVel));
+
+        const x = this.midiToX(loKey);
+        const right = this.midiToX(hiKey + 1);
+        const top = this.velocityToY(hiVel);
+        const bottom = this.velocityToY(loVel);
+        const width = right - x;
+        const height = Math.max(8, bottom - top + 4);
+
+        return {
+            x,
+            y: top,
+            width,
+            height,
+            top,
+            bottom: top + height
+        };
+    }
 
     setupEventListeners() {
         // Mouse down - start drag
@@ -820,13 +780,11 @@ class KeyboardVisualizer {
             }
         
             if (this.dragState.active) {
-                this.updateDrag(x);
+                this.updateDrag(x, y);
             } else {
                 const target = this.detectHoverTarget(x, y);
                 if (target) {
-                    if (target.type === 'edge-left' || target.type === 'edge-right') {
-                        this.canvas.style.cursor = 'ew-resize';
-                    } else if (target.type === 'body') {
+                    if (target.type === 'body') {
                         this.canvas.style.cursor = 'move';
                     }
                 } else {
@@ -910,6 +868,8 @@ class KeyboardVisualizer {
                     const assets = this.getAssetsForKey(midi);
                     if (assets.length > 0) {
                         this.selectAsset(assets[0]);
+                    } else if (this.onEmptyKeySelected) {
+                        this.onEmptyKeySelected(midi);
                     }
                 }
             }

@@ -3,6 +3,7 @@
         constructor() {
             this.modal = null;
             this.selectedPad = null;
+            this.multisampleAssignment = null;
             this.browserMode = 'pad';
             this.browserTitle = 'Sample Browser';
             this.importButtonLabel = 'Import To Pad';
@@ -46,19 +47,41 @@
             return ['all', ...this.allowedExtensions];
         }
 
+        normalizeMultisampleAssignment(assignment = {}) {
+            const rootNote = Math.max(0, Math.min(127, parseInt(assignment.rootNote ?? 60, 10) || 60));
+            const keyRangeBottom = Math.max(0, Math.min(127, parseInt(assignment.keyRangeBottom ?? rootNote, 10) || rootNote));
+            const keyRangeTop = Math.max(keyRangeBottom, Math.min(127, parseInt(assignment.keyRangeTop ?? rootNote, 10) || rootNote));
+            const velRangeBottom = Math.max(0, Math.min(127, parseInt(assignment.velRangeBottom ?? 0, 10) || 0));
+            const velRangeTop = Math.max(velRangeBottom, Math.min(127, parseInt(assignment.velRangeTop ?? 127, 10) || 127));
+            return {
+                rootNote,
+                keyRangeBottom,
+                keyRangeTop,
+                velRangeBottom,
+                velRangeTop
+            };
+        }
+
         configureBrowser(options = {}) {
             const {
                 mode = 'pad',
-                targetPad = null
+                targetPad = null,
+                multisampleAssignment = null
             } = options;
 
             this.browserMode = mode;
             this.selectedPad = targetPad;
+            this.multisampleAssignment = multisampleAssignment;
 
             if (mode === 'preset') {
                 this.browserTitle = 'Preset Browser';
                 this.importButtonLabel = 'Load Preset';
                 this.allowedExtensions = ['.xml', '.zip'];
+            } else if (mode === 'multisample') {
+                this.browserTitle = 'Add Multisample Layer';
+                this.importButtonLabel = 'Add Layer';
+                this.allowedExtensions = ['.wav'];
+                this.multisampleAssignment = this.normalizeMultisampleAssignment(multisampleAssignment || {});
             } else {
                 this.browserTitle = 'Sample Browser';
                 this.importButtonLabel = 'Import To Pad';
@@ -838,6 +861,9 @@
 
             let nextIndex = this.filteredIndex.findIndex((entry) => entry.relativePath === this.selectedRelativePath);
             if (nextIndex === -1) {
+                nextIndex = this.filteredIndex.findIndex((entry) => entry.kind !== 'directory');
+            }
+            if (nextIndex === -1) {
                 nextIndex = Math.min(Math.max(this.selectedIndex, 0), this.filteredIndex.length - 1);
             }
 
@@ -916,10 +942,17 @@
             const importButton = this.modal?.querySelector('#sampleBrowserImportBtn');
             if (!details || !previewButton || !importButton) return;
 
+            const assignmentMarkup = this.browserMode === 'multisample'
+                ? this.getMultisampleAssignmentMarkup()
+                : '';
+
             if (!fileEntry) {
-                details.innerHTML = '<div class="sample-browser-empty">Select a file.</div>';
+                details.innerHTML = `<div class="sample-browser-empty">Select a file.</div>${assignmentMarkup}`;
                 previewButton.disabled = true;
                 importButton.disabled = true;
+                if (this.browserMode === 'multisample') {
+                    this.bindMultisampleAssignmentInputs();
+                }
                 return;
             }
 
@@ -929,9 +962,12 @@
                     <div class="sample-browser-meta-row"><span>Path</span><strong>${fileEntry.relativePath || this.workingFolderHandle?.name || 'Root'}</strong></div>
                     <div class="sample-browser-meta-row"><span>Folders</span><strong>${this.getDirectorySubdirCount(fileEntry.relativePath)}</strong></div>
                     <div class="sample-browser-meta-row"><span>Files</span><strong>${this.getDirectoryFileCount(fileEntry.relativePath)}</strong></div>
-                `;
+                ${assignmentMarkup}`;
                 previewButton.disabled = true;
                 importButton.disabled = true;
+                if (this.browserMode === 'multisample') {
+                    this.bindMultisampleAssignmentInputs();
+                }
                 return;
             }
 
@@ -956,7 +992,76 @@
                 <div class="sample-browser-meta-row"><span>Channels</span><strong>${metadata?.channels ?? '--'}</strong></div>
                 <div class="sample-browser-meta-row"><span>Bit Depth</span><strong>${metadata?.bitDepth ?? '--'}</strong></div>
                 <div class="sample-browser-meta-row"><span>Preview</span><strong>${canPreview ? (fileEntry.ext === '.sfz' ? 'Uses first SFZ sample' : 'Available') : 'Unavailable'}</strong></div>
+            ${assignmentMarkup}`;
+
+            if (this.browserMode === 'multisample') {
+                this.bindMultisampleAssignmentInputs();
+            }
+        }
+
+        getMultisampleAssignmentMarkup() {
+            const assignment = this.normalizeMultisampleAssignment(this.multisampleAssignment || {});
+            this.multisampleAssignment = assignment;
+            return `
+                <div class="sample-browser-assignment">
+                    <div class="sample-browser-assignment-title">Layer Assignment</div>
+                    <div class="sample-browser-assignment-grid">
+                        <label class="sample-browser-assignment-field">
+                            <span>Root Note</span>
+                            <input type="number" min="0" max="127" step="1" id="sampleBrowserRootNote" value="${assignment.rootNote}">
+                        </label>
+                        <label class="sample-browser-assignment-field">
+                            <span>Key Low</span>
+                            <input type="number" min="0" max="127" step="1" id="sampleBrowserKeyLow" value="${assignment.keyRangeBottom}">
+                        </label>
+                        <label class="sample-browser-assignment-field">
+                            <span>Key High</span>
+                            <input type="number" min="0" max="127" step="1" id="sampleBrowserKeyHigh" value="${assignment.keyRangeTop}">
+                        </label>
+                        <label class="sample-browser-assignment-field">
+                            <span>Vel Low</span>
+                            <input type="number" min="0" max="127" step="1" id="sampleBrowserVelLow" value="${assignment.velRangeBottom}">
+                        </label>
+                        <label class="sample-browser-assignment-field">
+                            <span>Vel High</span>
+                            <input type="number" min="0" max="127" step="1" id="sampleBrowserVelHigh" value="${assignment.velRangeTop}">
+                        </label>
+                    </div>
+                </div>
             `;
+        }
+
+        bindMultisampleAssignmentInputs() {
+            const rootInput = this.modal?.querySelector('#sampleBrowserRootNote');
+            const keyLowInput = this.modal?.querySelector('#sampleBrowserKeyLow');
+            const keyHighInput = this.modal?.querySelector('#sampleBrowserKeyHigh');
+            const velLowInput = this.modal?.querySelector('#sampleBrowserVelLow');
+            const velHighInput = this.modal?.querySelector('#sampleBrowserVelHigh');
+            if (!rootInput || !keyLowInput || !keyHighInput || !velLowInput || !velHighInput) {
+                return;
+            }
+
+            const syncAssignment = () => {
+                const normalized = this.normalizeMultisampleAssignment({
+                    rootNote: rootInput.value,
+                    keyRangeBottom: keyLowInput.value,
+                    keyRangeTop: keyHighInput.value,
+                    velRangeBottom: velLowInput.value,
+                    velRangeTop: velHighInput.value
+                });
+
+                this.multisampleAssignment = normalized;
+                rootInput.value = normalized.rootNote;
+                keyLowInput.value = normalized.keyRangeBottom;
+                keyHighInput.value = normalized.keyRangeTop;
+                velLowInput.value = normalized.velRangeBottom;
+                velHighInput.value = normalized.velRangeTop;
+            };
+
+            [rootInput, keyLowInput, keyHighInput, velLowInput, velHighInput].forEach((input) => {
+                input.addEventListener('input', syncAssignment);
+                input.addEventListener('change', syncAssignment);
+            });
         }
 
         async selectIndex(index, allowAutoPreview) {
@@ -989,7 +1094,7 @@
         }
 
         async importSelected() {
-            if (this.browserMode === 'pad' && !this.selectedPad) {
+            if ((this.browserMode === 'pad' || this.browserMode === 'multisample') && !this.selectedPad) {
                 this.setStatus('No target pad selected', 'error');
                 return;
             }
@@ -1009,12 +1114,20 @@
                 const file = await fileEntry.handle.getFile();
                 this.selectedRelativePath = fileEntry.relativePath;
                 this.persistSelection();
-                this.setStatus(`${this.browserMode === 'preset' ? 'Loading' : 'Importing'} ${file.name}...`, 'info');
-                await window.BitboxerImport.unifiedImportHandler(
-                    file,
-                    'browser',
-                    this.browserMode === 'pad' ? this.selectedPad : null
-                );
+                this.setStatus(`${this.browserMode === 'preset' ? 'Loading' : this.browserMode === 'multisample' ? 'Adding' : 'Importing'} ${file.name}...`, 'info');
+                if (this.browserMode === 'multisample') {
+                    await window.BitboxerImport.addWavToMultisamplePad(
+                        file,
+                        this.selectedPad,
+                        this.multisampleAssignment || {}
+                    );
+                } else {
+                    await window.BitboxerImport.unifiedImportHandler(
+                        file,
+                        'browser',
+                        this.browserMode === 'pad' ? this.selectedPad : null
+                    );
+                }
                 this.closeModal();
             } catch (error) {
                 console.error('Browser import error:', error);
@@ -1158,12 +1271,13 @@
         async open(options = {}) {
             const {
                 targetPad = null,
-                mode = 'pad'
+                mode = 'pad',
+                multisampleAssignment = null
             } = options;
 
-            this.configureBrowser({ mode, targetPad });
+            this.configureBrowser({ mode, targetPad, multisampleAssignment });
 
-            if (mode === 'pad' && !targetPad) {
+            if ((mode === 'pad' || mode === 'multisample') && !targetPad) {
                 window.BitboxerUtils.setStatus('No pad selected', 'error');
                 return false;
             }
@@ -1229,6 +1343,10 @@
 
         async openForPad(padElement) {
             return this.open({ mode: 'pad', targetPad: padElement });
+        }
+
+        async openForMultisample(targetPad, assignment = {}) {
+            return this.open({ mode: 'multisample', targetPad, multisampleAssignment: assignment });
         }
 
         async openForPreset() {

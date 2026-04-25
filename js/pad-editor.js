@@ -84,9 +84,15 @@ async function openEditModal(pad) {
     if (window._multiSampleEditor) {
         window._multiSampleEditor.clearAudioData();
     }
+
+    if (window._multiEditorState) {
+        window._multiEditorState.reset();
+    }
     
-    // Clear multisample visualizer
-    window._multiKeyboardViz = null;
+    // Clear multisample visualizer state without recreating listeners on the same canvas
+    if (window._multiKeyboardViz) {
+        window._multiKeyboardViz.reset();
+    }
     
     // Hide multisample UI
     const editPanel = document.getElementById('multiEditPanel');
@@ -323,6 +329,15 @@ function setupParameterListeners() {
                     // Update visibility based on changes
                     window.BitboxerUI.updateTabVisibility();
                     window.BitboxerUI.updatePosConditionalVisibility();
+                    if (value === '0-multi') {
+                        requestAnimationFrame(() => {
+                            renderMultisampleList();
+                            if (window._multiKeyboardViz) {
+                                window._multiKeyboardViz.resize();
+                                window._multiKeyboardViz.render();
+                            }
+                        });
+                    }
 
                     // Force browser to recalculate styles
                     document.getElementById('tab-pos').offsetHeight;
@@ -546,7 +561,7 @@ function renderMultisampleList() {
         
         // Clear keyboard visualizer selection (but keep asset data)
         if (window._multiKeyboardViz) {
-            window._multiKeyboardViz.selectedAsset = null;
+            window._multiKeyboardViz.reset();
         }
         return;
     }
@@ -570,8 +585,36 @@ function renderMultisampleList() {
         if (!window._multiKeyboardViz) {
             console.log('>>> Creating new KeyboardVisualizer');
             window._multiKeyboardViz = new KeyboardVisualizer('keyboardCanvas', 'keyboardScrollCanvas');
-            window._multiKeyboardViz.onAssetSelected = (asset) => {
-                loadMultisampleAssetToEditor(asset);
+            window._multiKeyboardViz.onAssetSelected = async (asset) => {
+                await loadMultisampleAssetToEditor(asset);
+                playSelectedMultisampleAsset();
+            };
+            window._multiKeyboardViz.onEmptyKeySelected = async (midi) => {
+                const targetPad = window.BitboxerData.currentEditingPad;
+                if (!targetPad) {
+                    return;
+                }
+
+                if (!window.BitboxerSampleBrowser?.openForMultisample) {
+                    window.BitboxerUtils.setStatus('Sample browser unavailable. Use Chrome or Edge for local folder access.', 'error');
+                    return;
+                }
+
+                try {
+                    await window.BitboxerSampleBrowser.openForMultisample(targetPad, {
+                        rootNote: midi,
+                        keyRangeBottom: midi,
+                        keyRangeTop: midi,
+                        velRangeBottom: 0,
+                        velRangeTop: 127
+                    });
+                } catch (error) {
+                    if (error?.name === 'AbortError') {
+                        return;
+                    }
+                    console.error('Multisample add-layer browser error:', error);
+                    window.BitboxerUtils.setStatus(`Multisample browser error: ${error.message}`, 'error');
+                }
             };
         } else {
             console.log('>>> Reusing existing KeyboardVisualizer');
@@ -1649,18 +1692,12 @@ async function loadMultisampleAssetToEditor(asset) {
 
             console.log(`Configuring loop markers: start=${loopStart}, end=${loopEnd}, samlen=${samlen}`);
 
-            // Change marker colors and labels to green
             const markers = window._multiSampleEditor.markerController.markers;
-            markers.loopStart.color = '#5eff5e';
-            markers.loopStart.label = ' LOOP START';
-            markers.loopEnd.color = '#5eff5e';
-            markers.loopEnd.label = ' LOOP END';
-
-            // Hide sample start/end markers (not relevant for multisamples)
-            markers.start.color = 'transparent';
-            markers.start.label = '';
-            markers.end.color = 'transparent';
-            markers.end.label = '';
+            const themeColors = window._multiSampleEditor.renderer.getThemeColors();
+            window._multiSampleEditor.markerController.applyThemeColors({
+                hideSampleMarkers: true,
+                loopColor: themeColors.markerSlice
+            });
 
             // Set loop points from WAV
             const finalLoopEnd = loopEnd || samlen || audioBuffer.length;
@@ -1681,6 +1718,25 @@ async function loadMultisampleAssetToEditor(asset) {
     
     // Populate edit panel with current values
     populateMultisampleEditPanel(asset);
+}
+
+function playSelectedMultisampleAsset() {
+    if (!window._multiSampleEditor?.audioEngine?.audioBuffer) {
+        return;
+    }
+
+    const loopStart = parseInt(document.getElementById('multiLoopStart')?.value, 10) || 0;
+    const loopEnd = parseInt(document.getElementById('multiLoopEnd')?.value, 10) || window._multiSampleEditor.audioEngine.audioBuffer.length;
+
+    window._multiSampleEditor.stop();
+    window._multiSampleEditor.audioEngine.play({
+        startSample: 0,
+        endSample: window._multiSampleEditor.audioEngine.audioBuffer.length,
+        loopStartSample: loopStart,
+        loopEndSample: loopEnd,
+        loopEnabled: false,
+        reverse: false
+    });
 }
 
 // ============================================

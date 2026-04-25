@@ -240,9 +240,9 @@ h1 {
     grid-template-columns: repeat(4, 1fr);
     gap: var(--spacing-md);
     margin-bottom: var(--spacing-lg);
-    max-width: 500px; /* â† ADD THIS */
-    margin-left: auto;  /* â† ADD THIS (centers grid) */
-    margin-right: auto; /* â† ADD THIS */
+    max-width: 500px; /* ← ADD THIS */
+    margin-left: auto;  /* ← ADD THIS (centers grid) */
+    margin-right: auto; /* ← ADD THIS */
 }
 
 /* Individual Pad Styling */
@@ -936,6 +936,52 @@ h1 {
     word-break: break-word;
 }
 
+.sample-browser-assignment {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sample-browser-assignment-title {
+    margin-bottom: 10px;
+    color: var(--color-text-primary);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.sample-browser-assignment-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.sample-browser-assignment-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.sample-browser-assignment-field span {
+    color: var(--color-text-secondary);
+    font-size: 0.78rem;
+}
+
+.sample-browser-assignment-field input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--select-bg);
+    color: var(--color-text-primary);
+}
+
+.sample-browser-assignment-field input:focus {
+    outline: 1px solid var(--color-accent-bright-orange);
+    border-color: var(--color-accent-bright-orange);
+}
+
 .sample-browser-actions {
     display: flex;
     gap: 10px;
@@ -969,6 +1015,10 @@ h1 {
 
     .sample-browser-actions .btn {
         flex: 1 1 auto;
+    }
+
+    .sample-browser-assignment-grid {
+        grid-template-columns: 1fr;
     }
 
     .sample-browser-item-main {

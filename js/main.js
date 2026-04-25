@@ -427,6 +427,9 @@ function setupEventListeners() {
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             window.BitboxerPadPreview?.stopAll();
+            window.BitboxerSampleBrowser?.stopPreview?.();
+            window.BitboxerSampleEditor?.stop?.();
+            window._multiSampleEditor?.stop?.();
         }
     });
     

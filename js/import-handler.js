@@ -307,6 +307,7 @@ async function refreshPadEditorIfOpen(targetPad) {
         window.BitboxerUI.updateTabVisibility();
         window.BitboxerUI.updateLFOParameterVisibility();
         window.BitboxerUI.updatePosConditionalVisibility();
+        window.BitboxerPadEditor.renderMultisampleList?.();
 
         requestAnimationFrame(() => {
             if (window.BitboxerSampleEditor?.renderer) {
@@ -320,6 +321,88 @@ async function refreshPadEditorIfOpen(targetPad) {
     } catch (error) {
         console.error('Pad editor refresh failed:', error);
     }
+}
+
+async function addWavToMultisamplePad(file, targetPad, assignment = {}) {
+    if (!file || !targetPad) {
+        throw new Error('Missing target pad');
+    }
+
+    const row = parseInt(targetPad.dataset.row, 10);
+    const col = parseInt(targetPad.dataset.col, 10);
+    if (Number.isNaN(row) || Number.isNaN(col)) {
+        throw new Error('Invalid target pad');
+    }
+
+    const { presetData, assetCells } = window.BitboxerData;
+    const pad = presetData?.pads?.[row]?.[col];
+    if (!pad) {
+        throw new Error('Target pad data not found');
+    }
+
+    const targetMidi = Math.max(0, Math.min(127, parseInt(assignment.rootNote ?? 60, 10) || 60));
+    const keyRangeBottom = Math.max(0, Math.min(127, parseInt(assignment.keyRangeBottom ?? targetMidi, 10) || targetMidi));
+    const keyRangeTop = Math.max(keyRangeBottom, Math.min(127, parseInt(assignment.keyRangeTop ?? targetMidi, 10) || targetMidi));
+    const velRangeBottom = Math.max(0, Math.min(127, parseInt(assignment.velRangeBottom ?? 0, 10) || 0));
+    const velRangeTop = Math.max(velRangeBottom, Math.min(127, parseInt(assignment.velRangeTop ?? 127, 10) || 127));
+    const velRoot = Math.floor((velRangeBottom + velRangeTop) / 2);
+
+    if (!window._lastImportedFiles) {
+        window._lastImportedFiles = new Map();
+    }
+    window._lastImportedFiles.set(file.name, file);
+
+    const result = await window.BitboxerFileHandler.FileImporter.import(file);
+    const wavData = result?.wavFiles?.[0];
+    if (!wavData) {
+        throw new Error('Invalid WAV import');
+    }
+
+    pad.type = 'sample';
+    pad.params.multisammode = '1';
+    pad.params.cellmode = '0';
+    if (!pad.filename) {
+        pad.filename = `.\\${file.name}`;
+    }
+
+    const asset = {
+        row: assetCells.length,
+        filename: `.\\${file.name}`,
+        params: {
+            rootnote: targetMidi.toString(),
+            keyrangebottom: keyRangeBottom.toString(),
+            keyrangetop: keyRangeTop.toString(),
+            velroot: velRoot.toString(),
+            velrangebottom: velRangeBottom.toString(),
+            velrangetop: velRangeTop.toString(),
+            asssrcrow: row.toString(),
+            asssrccol: col.toString()
+        },
+        wavMetadata: {
+            sampleRate: wavData.metadata?.sampleRate || 44100,
+            numChannels: wavData.metadata?.channels || wavData.metadata?.numChannels || 1,
+            bitsPerSample: wavData.metadata?.bitsPerSample || 16,
+            duration: wavData.metadata?.duration || 0,
+            samlen: wavData.metadata?.samlen || Math.floor((wavData.metadata?.sampleRate || 44100) * (wavData.metadata?.duration || 0)),
+            loopStart: wavData.metadata?.loopPoints?.start || 0,
+            loopEnd: wavData.metadata?.loopPoints?.end || 0,
+            hasLoop: Boolean(wavData.metadata?.loopPoints),
+            rootKey: targetMidi
+        }
+    };
+
+    assetCells.push(asset);
+    window.BitboxerUI.updatePadDisplay();
+    await refreshPadEditorIfOpen(targetPad);
+
+    if (window._multiKeyboardViz) {
+        window._multiKeyboardViz.selectAsset?.(asset);
+    } else if (window.BitboxerPadEditor?.loadMultisampleAssetToEditor) {
+        await window.BitboxerPadEditor.loadMultisampleAssetToEditor(asset);
+    }
+
+    window.BitboxerUtils.setStatus(`Added multisample layer ${file.name} on ${targetMidi}`, 'success');
+    return asset;
 }
 
 // ============================================
@@ -1936,5 +2019,6 @@ window.BitboxerImport = {
     processImportedFiles,
     loadPadFromJSON,
     loadPadFromZIP,
-    autoLoadReferencedSamples
+    autoLoadReferencedSamples,
+    addWavToMultisamplePad
 };
