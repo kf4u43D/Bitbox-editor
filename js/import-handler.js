@@ -198,14 +198,7 @@ async function unifiedImportHandler(files, source, targetPad = null) {
                 }
                 
                 window.BitboxerUI.updatePadDisplay();
-
-                // NEW: Update slider ranges based on sample length
-                if (targetPad && window.BitboxerData.currentEditingPad === targetPad) {
-                    const row = parseInt(targetPad.dataset.row);
-                    const col = parseInt(targetPad.dataset.col);
-                    const padData = window.BitboxerData.presetData.pads[row][col];
-                    window.BitboxerPadEditor.updateSliderMaxValues(padData);
-                }
+                await refreshPadEditorIfOpen(targetPad);
 
                 window.BitboxerUtils.setStatus(`Loaded ${wavData.name}`, 'success');
             } catch (error) {
@@ -228,6 +221,104 @@ async function unifiedImportHandler(files, source, targetPad = null) {
             console.error('Import error:', error);
             window.BitboxerUtils.setStatus(`Import failed: ${error.message}`, 'error');
         }
+    }
+}
+
+function cacheFilesBySimpleName(filesMap) {
+    if (!filesMap) {
+        return;
+    }
+
+    if (!window._lastImportedFiles) {
+        window._lastImportedFiles = new Map();
+    }
+
+    filesMap.forEach((file, pathOrName) => {
+        const resolvedName = (pathOrName || file?.name || '').split(/[/\\]/).pop();
+        if (resolvedName) {
+            window._lastImportedFiles.set(resolvedName, file);
+        }
+    });
+}
+
+function isSamePadTarget(padA, padB) {
+    if (!padA || !padB) {
+        return false;
+    }
+
+    return padA.dataset.row === padB.dataset.row && padA.dataset.col === padB.dataset.col;
+}
+
+async function ensurePadSampleCached(padData) {
+    if (!padData?.filename || padData.params?.multisammode === '1') {
+        return;
+    }
+
+    const wavName = padData.filename.split(/[/\\]/).pop();
+    if (!wavName || !wavName.toLowerCase().endsWith('.wav')) {
+        return;
+    }
+
+    if (window._lastImportedFiles?.has(wavName)) {
+        return;
+    }
+
+    const foundFiles = await searchWorkingFolderForSamples([wavName]);
+    if (foundFiles.length === 0) {
+        return;
+    }
+
+    if (!window._lastImportedFiles) {
+        window._lastImportedFiles = new Map();
+    }
+
+    foundFiles.forEach((file) => {
+        window._lastImportedFiles.set(file.name, file);
+    });
+}
+
+async function refreshPadEditorIfOpen(targetPad) {
+    const { currentEditingPad, presetData } = window.BitboxerData;
+    if (!isSamePadTarget(currentEditingPad, targetPad) || !presetData) {
+        return;
+    }
+
+    const row = parseInt(currentEditingPad.dataset.row);
+    const col = parseInt(currentEditingPad.dataset.col);
+    const padData = presetData.pads[row][col];
+    if (!padData) {
+        return;
+    }
+
+    try {
+        await ensurePadSampleCached(padData);
+
+        window.BitboxerPadEditor.updateModalIcon(padData);
+        const modalTitle = document.getElementById('modalTitle');
+        if (modalTitle) {
+            modalTitle.textContent = `Pad ${currentEditingPad.dataset.padnum} - ${padData.filename || 'Empty'}`;
+        }
+
+        window.BitboxerPadEditor.loadParamsToModal(padData);
+        window.BitboxerPadEditor.renderModSlots(padData);
+        window.BitboxerPadEditor.updateSliderMaxValues(padData);
+        await window.BitboxerPadEditor.initSampleEditor(padData);
+        window.BitboxerUI.updatePadDisplay();
+        window.BitboxerUI.updateTabVisibility();
+        window.BitboxerUI.updateLFOParameterVisibility();
+        window.BitboxerUI.updatePosConditionalVisibility();
+
+        requestAnimationFrame(() => {
+            if (window.BitboxerSampleEditor?.renderer) {
+                window.BitboxerSampleEditor.renderer.resize();
+                window.BitboxerSampleEditor.render();
+            }
+            if (window.BitboxerSampleEditor?.scrollZoomBar) {
+                window.BitboxerSampleEditor.scrollZoomBar.resize();
+            }
+        });
+    } catch (error) {
+        console.error('Pad editor refresh failed:', error);
     }
 }
 
@@ -373,17 +464,7 @@ async function convertSFZToPad(sfzData, wavFiles, targetPad) {
         );
 
         window.BitboxerUI.updatePadDisplay();
-
-        // Update slider ranges immediately if modal is open
-        if (window.BitboxerData.currentEditingPad) {
-            const editingRow = parseInt(window.BitboxerData.currentEditingPad.dataset.row);
-            const editingCol = parseInt(window.BitboxerData.currentEditingPad.dataset.col);
-
-            if (editingRow === row && editingCol === col) {
-                const padData = window.BitboxerData.presetData.pads[row][col];
-                window.BitboxerPadEditor.updateSliderMaxValues(padData);
-            }
-        }
+        await refreshPadEditorIfOpen(targetPad);
 
         window.BitboxerUtils.setStatus(
             layer.needsMerge 
@@ -444,19 +525,20 @@ async function convertSFZToPad(sfzData, wavFiles, targetPad) {
             wavMetadata  // NEW: Pass metadata
         );
 
-        // Update slider ranges if this pad is currently being edited
-        if (window.BitboxerData.currentEditingPad) {
-            const editingRow = parseInt(window.BitboxerData.currentEditingPad.dataset.row);
-            const editingCol = parseInt(window.BitboxerData.currentEditingPad.dataset.col);
-
-            if (editingRow === mapping.row && editingCol === mapping.col) {
-                const padData = window.BitboxerData.presetData.pads[mapping.row][mapping.col];
-                window.BitboxerPadEditor.updateSliderMaxValues(padData);
-            }
-        }
     }
     
     window.BitboxerUI.updatePadDisplay();
+    if (window.BitboxerData.currentEditingPad) {
+        const editingRow = parseInt(window.BitboxerData.currentEditingPad.dataset.row);
+        const editingCol = parseInt(window.BitboxerData.currentEditingPad.dataset.col);
+        const editingWasMapped = result.mappings.some((mapping) =>
+            mapping.row === editingRow && mapping.col === editingCol
+        );
+
+        if (editingWasMapped) {
+            await refreshPadEditorIfOpen(window.BitboxerData.currentEditingPad);
+        }
+    }
     window.BitboxerUtils.setStatus(
         `Imported ${result.mappings.length} layer(s) to ${result.mappings.length} pad(s)`,
         'success'
@@ -1774,6 +1856,7 @@ async function loadPadFromJSON(file, targetPad) {
         if (padData.data) {
             window.BitboxerData.presetData.pads[row][col] = JSON.parse(JSON.stringify(padData.data));
             window.BitboxerUI.updatePadDisplay();
+            await refreshPadEditorIfOpen(targetPad);
             window.BitboxerUtils.setStatus(`Loaded from ${file.name}`, 'success');
         } else {
             window.BitboxerUtils.setStatus('Invalid pad JSON', 'error');
@@ -1810,7 +1893,8 @@ async function loadPadFromZIP(zipFile, targetPad) {
         const col = parseInt(targetPad.dataset.col);
         
         if (padData.data) {
-            window._lastImportedFiles = result.collection.files;
+            window._lastImportedFiles = new Map();
+            cacheFilesBySimpleName(result.collection.files);
             
             window.BitboxerData.presetData.pads[row][col] = JSON.parse(JSON.stringify(padData.data));
             
@@ -1833,6 +1917,7 @@ async function loadPadFromZIP(zipFile, targetPad) {
             }
             
             window.BitboxerUI.updatePadDisplay();
+            await refreshPadEditorIfOpen(targetPad);
             window.BitboxerUtils.setStatus(`Loaded from ${zipFile.name}`, 'success');
         } else {
             window.BitboxerUtils.setStatus('Invalid pad ZIP', 'error');

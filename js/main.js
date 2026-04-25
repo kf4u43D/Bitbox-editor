@@ -19,18 +19,16 @@ function setupWorkingFolder() {
     if (btn) {
         btn.style.display = '';
         
-        // If already set, show folder name (no blink)
         if (window.BitboxerData.workingFolderHandle) {
             btn.textContent = `📁 ${window.BitboxerData.workingFolderHandle.name}`;
             btn.classList.add('active');
             btn.classList.remove('blink-warning');
         } else {
-            // Not set - BLINK to get attention!
-            btn.textContent = '⚠️ Set Working Folder!';
-            btn.classList.add('blink-warning');
+            btn.textContent = '⚙️ Project Setup';
+            btn.classList.remove('blink-warning');
+            btn.classList.remove('active');
         }
         
-        // Clicking reopens startup modal
         btn.addEventListener('click', () => {
             window.BitboxerStartup.showStartupModal();
         });
@@ -97,6 +95,7 @@ function createPadGrid() {
             }
             
             pad.innerHTML = `
+                <button class="pad-preview-trigger" type="button" title="Preview pad" aria-label="Preview pad" disabled>▶</button>
                 <svg class="pad-mode-icon" width="16" height="16" viewBox="0 0 16 16">
                     <rect class="cls-1" width="16" height="16" rx="2.98" ry="2.98" fill="#888888a7" />
                 </svg>
@@ -126,6 +125,22 @@ function setupPadEvents(pad) {
     pad.addEventListener('drop', (e) => handleDrop(e, pad));
     pad.addEventListener('dragend', () => handleDragEnd(pad));
     pad.addEventListener('dragleave', () => pad.classList.remove('drag-over'));
+
+    const previewButton = pad.querySelector('.pad-preview-trigger');
+    if (previewButton) {
+        const stopPadInteraction = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        };
+
+        previewButton.addEventListener('pointerdown', stopPadInteraction);
+        previewButton.addEventListener('mousedown', stopPadInteraction);
+        previewButton.addEventListener('click', async (e) => {
+            stopPadInteraction(e);
+            await window.BitboxerPadPreview?.previewPad(pad);
+        });
+        previewButton.addEventListener('dblclick', stopPadInteraction);
+    }
 }
 
 // ============================================
@@ -278,6 +293,12 @@ function setupGlobalDragDrop() {
     });
 }
 
+function resolvePadImportTarget() {
+    return window.BitboxerData.currentEditingPad
+        || document.querySelector('.pad.selected')
+        || null;
+}
+
 // ============================================
 // EVENT LISTENERS SETUP
 // ============================================
@@ -302,16 +323,11 @@ function setupEventListeners() {
     });
     
     // File operations
-    document.getElementById('loadBtn').addEventListener('click', () => {
-        document.getElementById('fileInput').click();
-    });
-    
-    document.getElementById('fileInput').addEventListener('change', async (e) => {
-        if (e.target.files.length === 0) return;
-        
-        const files = e.target.files.length === 1 ? e.target.files[0] : Array.from(e.target.files);
-        await window.BitboxerImport.unifiedImportHandler(files, 'button');
-        e.target.value = '';
+    document.getElementById('loadBtn').addEventListener('click', async () => {
+        const openedBrowser = await window.BitboxerSampleBrowser?.openForPreset();
+        if (!openedBrowser) {
+            window.BitboxerUtils.setStatus('Preset browser unavailable', 'error');
+        }
     });
     
     // Project rename
@@ -342,29 +358,28 @@ function setupEventListeners() {
     }
     
     // Import to pad
-    document.getElementById('importToPadBtn').addEventListener('click', () => {
-        document.getElementById('padImportInput').click();
-    });
-    
-    document.getElementById('padImportInput').addEventListener('change', async (e) => {
-        if (e.target.files.length === 0) return;
-        
-        const selectedPad = document.querySelector('.pad.selected');
-        if (!selectedPad) {
+    document.getElementById('importToPadBtn').addEventListener('click', async () => {
+        const targetPad = resolvePadImportTarget();
+        if (!targetPad) {
             window.BitboxerUtils.setStatus('No pad selected', 'error');
-            e.target.value = '';
             return;
         }
-        
-        const files = e.target.files.length === 1 ? e.target.files[0] : Array.from(e.target.files);
-        await window.BitboxerImport.unifiedImportHandler(files, 'button', selectedPad);
-        e.target.value = '';
+
+        const openedBrowser = await window.BitboxerSampleBrowser?.openForPad(targetPad);
+        if (!openedBrowser) {
+            window.BitboxerUtils.setStatus('Sample browser unavailable', 'error');
+        }
+    });
+    
+    document.getElementById('stopPreviewBtn').addEventListener('click', () => {
+        window.BitboxerPadPreview?.stopAll();
     });
     
     document.getElementById('saveBtn').addEventListener('click', window.BitboxerXML.savePreset);
     
     document.getElementById('newPresetBtn').addEventListener('click', () => {
         if (confirm('Create new preset? All pads will be lost!')) {
+            window.BitboxerPadPreview?.stopAll();
             window.BitboxerUI.clearPadSelection();
             window.BitboxerUI.updateButtonStates();
             window.BitboxerData.createEmptyPreset();
@@ -408,6 +423,12 @@ function setupEventListeners() {
             window.BitboxerUI.hideContextMenu();
         }
     });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            window.BitboxerPadPreview?.stopAll();
+        }
+    });
     
     document.getElementById('contextEdit').onclick = () => {
         const pad = document.querySelector('.pad.selected');
@@ -442,7 +463,16 @@ function setupEventListeners() {
     };
     
     document.getElementById('contextImport').onclick = () => {
-        document.getElementById('padImportInput').click();
+        const pad = document.querySelector('.pad.selected');
+        if (pad) {
+            window.BitboxerSampleBrowser?.openForPad(pad).then((openedBrowser) => {
+                if (!openedBrowser) {
+                    window.BitboxerUtils.setStatus('Sample browser unavailable', 'error');
+                }
+            });
+        } else {
+            window.BitboxerUtils.setStatus('No pad selected', 'error');
+        }
         window.BitboxerUI.hideContextMenu();
     };
     
@@ -458,7 +488,17 @@ function setupEventListeners() {
     });
 
     document.getElementById('loadPadPresetBtn').addEventListener('click', () => {
-        document.getElementById('padImportInput').click();
+        const { currentEditingPad } = window.BitboxerData;
+        if (currentEditingPad) {
+            window.BitboxerSampleBrowser?.openForPad(currentEditingPad).then((openedBrowser) => {
+                if (!openedBrowser) {
+                    window.BitboxerUtils.setStatus('Sample browser unavailable', 'error');
+                }
+            });
+            return;
+        }
+
+        window.BitboxerUtils.setStatus('No pad selected', 'error');
     });
 
     // FX set save/load

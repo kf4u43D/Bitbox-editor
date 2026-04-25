@@ -31,10 +31,17 @@
             <!-- App Title (updated dynamically with project name) -->
             <h1 id="projectTitle" style="cursor: pointer;" title="Click to rename">BITBOXER</h1>
 
-            <!-- Mode Toggle: Switch between Bitbox Micro (8 pads) and mk2 (16 pads) -->
-            <div class="mode-toggle">
-                <button class="mode-btn active" data-mode="micro">Bitbox Micro</button>
-                <button class="mode-btn" data-mode="mk2">Bitbox mk2</button>
+            <div class="header-controls">
+                <div class="theme-toggle">
+                    <label for="themeSelect">Theme</label>
+                    <select class="select-dark header-theme-select" id="themeSelect" title="Select UI theme"></select>
+                </div>
+
+                <!-- Mode Toggle: Switch between Bitbox Micro (8 pads) and mk2 (16 pads) -->
+                <div class="mode-toggle">
+                    <button class="mode-btn active" data-mode="micro">Bitbox Micro</button>
+                    <button class="mode-btn" data-mode="mk2">Bitbox mk2</button>
+                </div>
             </div>
         </div>
 
@@ -78,7 +85,6 @@
                     <div class="btn-container-dual">
                         <div><!-- Load Full Preset -->
                             <button class="btn btn-primary" id="loadBtn">Load Preset</button>
-                            <input type="file" id="fileInput" accept=".xml,.zip" multiple>
                         </div>
                         <!-- Save -->
                         <button class="btn btn-primary" id="saveBtn">Save Preset</button>
@@ -140,12 +146,16 @@
                             <!-- Import to Pad -->
                             <div>
                                 <button class="btn" id="importToPadBtn" disabled>Import Pad</button>
-                                <input type="file" id="padImportInput" accept=".xml,.sfz,.wav,.zip" multiple>
                             </div>
 
+                            <button class="btn" id="stopPreviewBtn" disabled>Stop Preview</button>
+
+                        </div>
+
+                        <div class="btn-container-dual">
+                            <div></div>
                             <!-- Export Selected: Exports selected pads to JSON/ZIP -->
                             <button class="btn" id="exportPadBtn" disabled>Export Pad(s)</button>
-
                         </div>
 
                         <div class="btn-container-dual">
@@ -573,7 +583,7 @@
                 <!-- Sample Editor -->
                 <div id="sampleEditorContainer" style="margin-bottom: 20px; display: none;">
                     <canvas id="waveformCanvas"
-                        style="width: 100%; height: 200px; background: #1a1614; border-radius: 6px; cursor: crosshair;"></canvas>
+                        style="width: 100%; height: 200px; background: var(--color-bg-primary); border-radius: 6px; cursor: crosshair;"></canvas>
 
                     <!-- Unified Scroll-Zoom Bar -->
                     <div style="margin-top: 0px; width: 100%;">
@@ -586,7 +596,7 @@
                                            display: block; 
                                            border-radius: 6px; 
                                            cursor: default; 
-                                           background: #2a2420;"></canvas>
+                                           background: var(--color-bg-secondary);"></canvas>
                     </div>
 
                     <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center; flex-wrap: wrap;">
@@ -603,6 +613,37 @@
                         <!-- Slicer mode controls (hidden by default) -->
                         <div id="slicerControls"
                             style="display: none; flex-direction: column; gap: 8px; margin-top: 10px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <label style="color: var(--color-text-secondary); font-size: 0.85em; min-width: 80px;">
+                                    Grid BPM:
+                                </label>
+                                <input type="number" id="gridSliceTempoInput" min="20" max="300" value="120"
+                                    style="width: 90px; background: var(--color-bg-secondary); color: var(--color-text-primary); border: 1px solid var(--color-border); border-radius: 3px; padding: 4px 6px;">
+                                <label style="color: var(--color-text-secondary); font-size: 0.85em; min-width: 60px;">
+                                    Division:
+                                </label>
+                                <select id="gridSliceDivisionSelect" class="select-dark" style="flex: 1;">
+                                    <option value="1bar">1 Bar</option>
+                                    <option value="1/2">1/2</option>
+                                    <option value="1/4">1/4</option>
+                                    <option value="1/8">1/8</option>
+                                    <option value="1/8T">1/8T</option>
+                                    <option value="1/16" selected>1/16</option>
+                                    <option value="1/16T">1/16T</option>
+                                    <option value="1/32">1/32</option>
+                                </select>
+                            </div>
+
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <label style="color: var(--color-text-secondary); font-size: 0.85em; min-width: 80px;">
+                                    Offset:
+                                </label>
+                                <input type="number" id="gridSliceOffsetMsInput" min="0" max="5000" value="0" step="1"
+                                    style="width: 90px; background: var(--color-bg-secondary); color: var(--color-text-primary); border: 1px solid var(--color-border); border-radius: 3px; padding: 4px 6px;">
+                                <span style="color: var(--color-text-secondary); font-size: 0.85em;">ms</span>
+                                <button class="btn" id="applyGridSlicesBtn" style="margin-left: auto;">Apply Grid</button>
+                            </div>
+
                             <!-- Algorithm Selection -->
                             <div style="display: flex; align-items: center; gap: 10px;">
                                 <label style="color: var(--color-text-secondary); font-size: 0.85em; min-width: 80px;">
@@ -1301,10 +1342,10 @@
                     <h3>Waveform - <span id="multiSampleName">Select a key</span></h3>
 
                     <canvas id="multiWaveformCanvas"
-                        style="width: 100%; height: 200px; background: #1a1614; border-radius: 6px; cursor: crosshair; display: block;"></canvas>
+                        style="width: 100%; height: 200px; background: var(--color-bg-primary); border-radius: 6px; cursor: crosshair; display: block;"></canvas>
 
                     <canvas id="multiScrollZoomCanvas"
-                        style="width: 100%; height: 30px; display: block; border-radius: 6px; cursor: default; background: #2a2420; margin-top: 5px;"></canvas>
+                        style="width: 100%; height: 30px; display: block; border-radius: 6px; cursor: default; background: var(--color-bg-secondary); margin-top: 5px;"></canvas>
 
                     <div style="display: flex; gap: 10px; margin-top: 10px;">
                         <button class="btn" id="multiPlayBtn">▶ Play</button>
@@ -2013,11 +2054,14 @@
     <!-- Onset Detection Module -->
     <script src="js/onset-detector.js"></script>
 
+    <!-- Grid Slicer Module -->
+    <script src="js/grid-slicer.js"></script>
+
     <!-- Keyboard Visualizer -->
     <script src="js/keyboard-visualizer.js"></script>
 
     <!-- Sample Editor -->
-    <script src="js/sample-editor.js"></script>
+    <script src="js/sample-editor-20260424.js"></script>
 
     <!-- 7. Pad Editor: Pad editing and modulation -->
     <script src="js/pad-editor.js"></script>
@@ -2042,6 +2086,15 @@
 
     <!-- NEW: Startup Modal System -->
     <script src="js/startup-modal.js"></script>
+
+    <!-- NEW: Theme Manager -->
+    <script src="js/theme-manager.js"></script>
+
+    <!-- NEW: Pad Preview Controller -->
+    <script src="js/pad-preview-controller.js"></script>
+
+    <!-- NEW: Sample Browser Preview -->
+    <script src="js/sample-browser-preview.js"></script>
 
     <!-- 12. Main: Application initialization (MUST BE LAST!!!) -->
     <script src="js/main.js"></script>

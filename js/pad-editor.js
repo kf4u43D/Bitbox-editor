@@ -981,7 +981,7 @@ async function initSampleEditor(padData) {
     }
 
     // Check if we need full initialization
-    const { currentEditingPad } = window.BitboxerData;
+    const { currentEditingPad, presetData } = window.BitboxerData;
     const row = parseInt(currentEditingPad.dataset.row);
     const col = parseInt(currentEditingPad.dataset.col);
     const currentPadId = `${row}-${col}`;
@@ -1125,6 +1125,10 @@ async function initSampleEditor(padData) {
         const sensitivityValue = document.getElementById('onsetSensitivityValue');
         const minDistanceSlider = document.getElementById('minSliceDistanceSlider');
         const minDistanceValue = document.getElementById('minSliceDistanceValue');
+        const gridTempoInput = document.getElementById('gridSliceTempoInput');
+        const gridDivisionSelect = document.getElementById('gridSliceDivisionSelect');
+        const gridOffsetMsInput = document.getElementById('gridSliceOffsetMsInput');
+        const applyGridSlicesBtn = document.getElementById('applyGridSlicesBtn');
 
         // Store current settings
         let currentAlgorithm = 'flux';
@@ -1144,7 +1148,8 @@ async function initSampleEditor(padData) {
                     try {
                         window.BitboxerSampleEditor.markerController.autoDetectSlices(
                             currentAlgorithm,
-                            currentSensitivity
+                            currentSensitivity,
+                            currentMinDistance
                         );
                         updateSliceCount();
                         window.BitboxerSampleEditor.render();
@@ -1193,6 +1198,110 @@ async function initSampleEditor(padData) {
                 currentMinDistance = parseInt(minDistanceSlider.value);
                 const ms = (currentMinDistance / sampleRate * 1000).toFixed(0);
                 minDistanceValue.textContent = ms + ' ms';
+            };
+
+            minDistanceSlider.onchange = () => {
+                triggerAutoDetect();
+            };
+        }
+
+        if (gridTempoInput) {
+            gridTempoInput.value = presetData.tempo || '120';
+            gridTempoInput.onchange = () => {
+                const bpm = parseInt(gridTempoInput.value, 10);
+                if (!Number.isNaN(bpm) && bpm >= 20 && bpm <= 300) {
+                    presetData.tempo = bpm.toString();
+                } else {
+                    gridTempoInput.value = presetData.tempo || '120';
+                }
+            };
+        }
+
+        if (gridDivisionSelect) {
+            gridDivisionSelect.value = gridDivisionSelect.value || '1/16';
+        }
+
+        if (gridOffsetMsInput) {
+            gridOffsetMsInput.value = '0';
+        }
+
+        if (applyGridSlicesBtn) {
+            applyGridSlicesBtn.onclick = () => {
+                const audioBuffer = window.BitboxerSampleEditor.audioEngine.audioBuffer;
+                if (!audioBuffer) {
+                    window.BitboxerUtils.setStatus('No audio loaded for grid slicing', 'error');
+                    return;
+                }
+
+                const bpm = parseInt(gridTempoInput?.value || presetData.tempo || '120', 10);
+                if (Number.isNaN(bpm) || bpm < 20 || bpm > 300) {
+                    window.BitboxerUtils.setStatus('Grid BPM must be between 20 and 300', 'error');
+                    return;
+                }
+
+                const division = gridDivisionSelect?.value || '1/16';
+                const offsetMs = parseFloat(gridOffsetMsInput?.value || '0');
+                const safeOffsetMs = Number.isNaN(offsetMs) ? 0 : Math.max(0, offsetMs);
+                const offsetSamples = Math.round((safeOffsetMs / 1000) * audioBuffer.sampleRate);
+
+                const existingCount = window.BitboxerSampleEditor.markerController.sliceMarkers.length;
+                if (existingCount > 1 && !confirm('Replace current slices with a regular grid?')) {
+                    return;
+                }
+
+                try {
+                    let positions = window.BitboxerGridSlicer.computeGridSlicePositions({
+                        sampleRate: audioBuffer.sampleRate,
+                        totalSamples: audioBuffer.length,
+                        bpm: bpm,
+                        division: division,
+                        offsetSamples: offsetSamples
+                    });
+
+                    const channelData = window.BitboxerSampleEditor.renderer.waveformData?.channelData?.[0];
+                    if (window.BitboxerSampleEditor.markerController.snapToZeroCrossingEnabled && channelData) {
+                        positions = positions.map((sample, index) => {
+                            if (index === 0) return 0;
+                            return window.BitboxerSampleEditor.markerController.findZeroCrossing(sample, channelData);
+                        });
+                    }
+
+                    positions = [...new Set(positions)]
+                        .filter((sample) => sample >= 0 && sample < audioBuffer.length)
+                        .sort((a, b) => a - b);
+
+                    if (!positions.includes(0)) {
+                        positions.unshift(0);
+                    }
+
+                    if (positions.length > 512) {
+                        positions = positions.slice(0, 512);
+                        window.BitboxerUtils.setStatus('Grid limited to 512 slices', 'info');
+                    }
+
+                    if (positions.length === 0) {
+                        window.BitboxerUtils.setStatus('Grid produced no slice positions', 'error');
+                        return;
+                    }
+
+                    window.BitboxerSampleEditor.markerController.sliceMarkers = positions;
+                    window.BitboxerSampleEditor.markerController.updateSlicesToPad();
+                    window.BitboxerSampleEditor.render();
+                    updateSliceCount();
+
+                    presetData.tempo = bpm.toString();
+                    if (gridTempoInput) {
+                        gridTempoInput.value = bpm.toString();
+                    }
+
+                    window.BitboxerUtils.setStatus(
+                        `Applied grid: ${positions.length} slices at ${bpm} BPM (${division})`,
+                        'success'
+                    );
+                } catch (error) {
+                    console.error('Grid slicing error:', error);
+                    window.BitboxerUtils.setStatus(`Grid slicing failed: ${error.message}`, 'error');
+                }
             };
         }
 

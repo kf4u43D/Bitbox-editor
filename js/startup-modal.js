@@ -86,14 +86,30 @@ function openHandleDB() {
 /**
  * Verifies folder handle is still accessible
  */
-async function verifyFolderAccess(dirHandle) {
+async function verifyFolderAccess(dirHandle, options = {}) {
+    const { interactive = false } = options;
+
     try {
-        // Request permission (shows browser prompt if needed)
-        const permission = await dirHandle.requestPermission({ mode: 'read' });
-        return permission === 'granted';
+        const queried = typeof dirHandle.queryPermission === 'function'
+            ? await dirHandle.queryPermission({ mode: 'read' })
+            : 'prompt';
+
+        if (queried === 'granted') {
+            return 'granted';
+        }
+
+        if (!interactive) {
+            return queried;
+        }
+
+        if (typeof dirHandle.requestPermission === 'function') {
+            return await dirHandle.requestPermission({ mode: 'read' });
+        }
+
+        return queried;
     } catch (error) {
         console.error('Permission verification failed:', error);
-        return false;
+        return 'denied';
     }
 }
 
@@ -101,10 +117,52 @@ async function verifyFolderAccess(dirHandle) {
 // STARTUP MODAL UI
 // ============================================
 
+async function restorePersistedSetup() {
+    const workingFolderSet = localStorage.getItem('workingFolder_set') === 'true';
+    const fxPresetsSet = localStorage.getItem('fxPresets_set') === 'true';
+
+    if (workingFolderSet) {
+        const workingFolderHandle = await retrieveFolderHandle('workingFolder');
+        if (workingFolderHandle) {
+            const accessState = await verifyFolderAccess(workingFolderHandle);
+            if (accessState !== 'denied') {
+                window.BitboxerData.workingFolderHandle = workingFolderHandle;
+            } else {
+                localStorage.removeItem('workingFolder_set');
+            }
+        } else {
+            localStorage.removeItem('workingFolder_set');
+        }
+    }
+
+    if (fxPresetsSet) {
+        const fxPresetsHandle = await retrieveFolderHandle('fxPresets');
+        if (fxPresetsHandle) {
+            const accessState = await verifyFolderAccess(fxPresetsHandle);
+            if (accessState !== 'denied') {
+                window.BitboxerData.fxPresetsFolderHandle = fxPresetsHandle;
+                if (accessState === 'granted') {
+                    await window.BitboxerFXPresetsExternal.scanPresetsFolder(fxPresetsHandle);
+                    window.BitboxerFXPresetsExternal.refreshAllPresetDropdowns();
+                }
+            } else {
+                localStorage.removeItem('fxPresets_set');
+            }
+        } else {
+            localStorage.removeItem('fxPresets_set');
+        }
+    }
+}
+
 /**
  * Shows unified startup modal
  */
 async function showStartupModal() {
+    const existingModal = document.getElementById('startupModal');
+    if (existingModal) {
+        return Promise.resolve();
+    }
+
     // Check if folders were previously set
     const workingFolderSet = localStorage.getItem('workingFolder_set') === 'true';
     const fxPresetsSet = localStorage.getItem('fxPresets_set') === 'true';
@@ -118,8 +176,8 @@ async function showStartupModal() {
     if (workingFolderSet) {
         workingFolderHandle = await retrieveFolderHandle('workingFolder');
         if (workingFolderHandle) {
-            const accessible = await verifyFolderAccess(workingFolderHandle);
-            if (accessible) {
+            const accessState = await verifyFolderAccess(workingFolderHandle);
+            if (accessState === 'granted' || accessState === 'prompt') {
                 workingFolderStatus = `✓ ${workingFolderHandle.name}`;
                 window.BitboxerData.workingFolderHandle = workingFolderHandle;
             } else {
@@ -136,13 +194,14 @@ async function showStartupModal() {
     if (fxPresetsSet) {
         fxPresetsHandle = await retrieveFolderHandle('fxPresets');
         if (fxPresetsHandle) {
-            const accessible = await verifyFolderAccess(fxPresetsHandle);
-            if (accessible) {
+            const accessState = await verifyFolderAccess(fxPresetsHandle);
+            if (accessState === 'granted' || accessState === 'prompt') {
                 fxPresetsStatus = `✓ ${fxPresetsHandle.name}`;
                 window.BitboxerData.fxPresetsFolderHandle = fxPresetsHandle;
-                // Auto-scan presets
-                await window.BitboxerFXPresetsExternal.scanPresetsFolder(fxPresetsHandle);
-                window.BitboxerFXPresetsExternal.refreshAllPresetDropdowns();
+                if (accessState === 'granted') {
+                    await window.BitboxerFXPresetsExternal.scanPresetsFolder(fxPresetsHandle);
+                    window.BitboxerFXPresetsExternal.refreshAllPresetDropdowns();
+                }
             } else {
                 fxPresetsStatus = '⚠️ Permission denied';
                 localStorage.removeItem('fxPresets_set');
@@ -245,15 +304,17 @@ async function showStartupModal() {
     `;
     
     document.body.appendChild(modal);
-    
-    // Setup event listeners
-    setupStartupModalListeners(modal);
+
+    return new Promise((resolve) => {
+        // Setup event listeners
+        setupStartupModalListeners(modal, resolve);
+    });
 }
 
 /**
  * Sets up event listeners for startup modal
  */
-function setupStartupModalListeners(modal) {
+function setupStartupModalListeners(modal, onComplete = null) {
     const projectNameInput = document.getElementById('startupProjectName');
     const workingFolderBtn = document.getElementById('selectWorkingFolderBtn');
     const fxPresetsBtn = document.getElementById('selectFXPresetsBtn');
@@ -271,8 +332,7 @@ function setupStartupModalListeners(modal) {
         
         try {
             const dirHandle = await window.showDirectoryPicker({
-                mode: 'read',
-                startIn: 'documents'
+                mode: 'read'
             });
             
             // Store handle
@@ -298,8 +358,7 @@ function setupStartupModalListeners(modal) {
         
         try {
             const dirHandle = await window.showDirectoryPicker({
-                mode: 'read',
-                startIn: 'documents'
+                mode: 'read'
             });
             
             // Store handle
@@ -352,6 +411,10 @@ function setupStartupModalListeners(modal) {
 
         // Close modal
         document.body.removeChild(modal);
+
+        if (typeof onComplete === 'function') {
+            onComplete();
+        }
         
         // Show success message
         const statusParts = [];
@@ -395,7 +458,12 @@ function showStartupModalButton() {
  * Call this in initializeApp() BEFORE creating preset
  */
 async function initStartupModal() {
-    // Always show modal on startup (user can skip folders)
+    await restorePersistedSetup();
+
+    if (!window.BitboxerData.projectName) {
+        window.BitboxerData.projectName = `Project_${window.BitboxerData.generateRandomHex()}`;
+    }
+
     await showStartupModal();
 }
 
@@ -405,6 +473,8 @@ async function initStartupModal() {
 window.BitboxerStartup = {
     initStartupModal,
     showStartupModal,
+    showStartupModalButton,
+    restorePersistedSetup,
     storeFolderHandle,
     retrieveFolderHandle,
     verifyFolderAccess
