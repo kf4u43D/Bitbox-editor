@@ -326,7 +326,7 @@ function setupStartupModalListeners(modal, onComplete = null) {
     // Working folder selection
     workingFolderBtn.addEventListener('click', async () => {
         if (!window.showDirectoryPicker) {
-            alert('Folder access not supported in this browser. Use Chrome or Edge.');
+            alert('Folder access is not supported in this browser. Use Chrome or Edge for local folder access.');
             return;
         }
         
@@ -352,7 +352,7 @@ function setupStartupModalListeners(modal, onComplete = null) {
     // FX presets folder selection
     fxPresetsBtn.addEventListener('click', async () => {
         if (!window.showDirectoryPicker) {
-            alert('Folder access not supported in this browser. Use Chrome or Edge.');
+            alert('Folder access is not supported in this browser. Use Chrome or Edge for local folder access.');
             return;
         }
         
