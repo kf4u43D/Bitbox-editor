@@ -399,7 +399,19 @@ function setupEventListeners() {
     // Edit modal
     document.getElementById('closeModal').addEventListener('click', window.BitboxerUI.closeEditModal);
     document.getElementById('editModal').addEventListener('click', (e) => {
-        if (e.target.id === 'editModal') window.BitboxerUI.closeEditModal();
+        if (e.target.id !== 'editModal') return;
+
+        const shouldSuppressClose =
+            window.BitboxerSampleEditor?.shouldSuppressModalClose?.() ||
+            window._multiSampleEditor?.shouldSuppressModalClose?.();
+
+        if (shouldSuppressClose) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+
+        window.BitboxerUI.closeEditModal();
     });
     
     // FX modal
