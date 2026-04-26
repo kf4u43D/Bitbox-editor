@@ -322,8 +322,34 @@ function setupParameterListeners() {
                         updateParamAndSave('cellmode', '0');
                         updateParamAndSave('multisammode', '1');
                     } else {
+                        const { currentEditingPad, presetData } = window.BitboxerData;
+                        const row = parseInt(currentEditingPad?.dataset.row, 10);
+                        const col = parseInt(currentEditingPad?.dataset.col, 10);
+                        const padData = presetData?.pads?.[row]?.[col];
+                        const wasMultisample = padData?.params?.multisammode === '1';
+                        const existingLayerCount = wasMultisample && !Number.isNaN(row) && !Number.isNaN(col)
+                            ? countMultisampleAssetsForPad(row, col)
+                            : 0;
+
+                        if (wasMultisample && existingLayerCount > 1) {
+                            const confirmed = confirm(
+                                `This pad contains ${existingLayerCount} multisample layers. Switching mode will remove them. Continue?`
+                            );
+                            if (!confirmed) {
+                                select.value = '0-multi';
+                                return;
+                            }
+                        }
+
                         updateParamAndSave('cellmode', value);
                         updateParamAndSave('multisammode', '0');
+
+                        if (wasMultisample && !Number.isNaN(row) && !Number.isNaN(col)) {
+                            const removedCount = purgeMultisampleAssetsForPad(row, col);
+                            if (removedCount > 0) {
+                                window.BitboxerUtils.setStatus(`Removed ${removedCount} multisample layer${removedCount > 1 ? 's' : ''}`, 'info');
+                            }
+                        }
                     }
 
                     // Update visibility based on changes
@@ -478,6 +504,39 @@ function updateParamAndSave(param, value) {
     window.BitboxerUtils.updateParamDisplay(param, value);
 }
 
+function purgeMultisampleAssetsForPad(row, col) {
+    const { assetCells } = window.BitboxerData;
+    if (!Array.isArray(assetCells) || assetCells.length === 0) {
+        return 0;
+    }
+
+    const beforeCount = assetCells.length;
+    window.BitboxerData.assetCells = assetCells.filter((asset) =>
+        !(parseInt(asset.params?.asssrcrow, 10) === row &&
+          parseInt(asset.params?.asssrccol, 10) === col)
+    );
+
+    const removedCount = beforeCount - window.BitboxerData.assetCells.length;
+
+    if (removedCount > 0 && window._multiKeyboardViz) {
+        window._multiKeyboardViz.reset();
+    }
+
+    return removedCount;
+}
+
+function countMultisampleAssetsForPad(row, col) {
+    const { assetCells } = window.BitboxerData;
+    if (!Array.isArray(assetCells) || assetCells.length === 0) {
+        return 0;
+    }
+
+    return assetCells.filter((asset) =>
+        parseInt(asset.params?.asssrcrow, 10) === row &&
+        parseInt(asset.params?.asssrccol, 10) === col
+    ).length;
+}
+
 // ============================================
 // ENVELOPE VISUALIZATION
 // ============================================
@@ -497,1084 +556,282 @@ function drawEnvelope() {
     // Get envelope values
     const attack = parseFloat(document.getElementById('envattack').value) / 1000;
     const decay = parseFloat(document.getElementById('envdecay').value) / 1000;
-    const sustain = parseFloat(document.getElementById('envsus').value) / 1000;
+    const sustain = parseFloat(document.getElementById('envsus').value) / 100;
     const release = parseFloat(document.getElementById('envrel').value) / 1000;
 
-    // Draw envelope shape
-    ctx.strokeStyle = '#a35a2d';
+    const totalTime = attack + decay + release + 1; // +1 for sustain visualization
+    const scale = width / totalTime;
+
+    // Grid
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i <= 4; i++) {
+        const y = i * height / 4;
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+    }
+    ctx.stroke();
+
+    // Envelope
+    ctx.strokeStyle = '#FF6B35';
     ctx.lineWidth = 2;
     ctx.beginPath();
-
-    const pad = 15;
-    const w = width - pad * 2;
-    const h = height - pad * 2;
-
-    // Calculate segment widths
-    const total = attack + decay + 0.4 + release; // 0.4 = sustain time
-    const ax = (attack / total) * w;
-    const dx = (decay / total) * w;
-    const sx = (0.4 / total) * w;
-    const rx = (release / total) * w;
-
-    // Draw ADSR shape
-    ctx.moveTo(pad, pad + h);                                    // Start
-    ctx.lineTo(pad + ax, pad);                                   // Attack
-    ctx.lineTo(pad + ax + dx, pad + h * (1 - sustain));        // Decay
-    ctx.lineTo(pad + ax + dx + sx, pad + h * (1 - sustain));   // Sustain
-    ctx.lineTo(pad + ax + dx + sx + rx, pad + h);               // Release
-
+    ctx.moveTo(0, height);
+    ctx.lineTo(attack * scale, 0);
+    ctx.lineTo((attack + decay) * scale, height * (1 - sustain));
+    ctx.lineTo((attack + decay + 1) * scale, height * (1 - sustain));
+    ctx.lineTo(width, height);
     ctx.stroke();
 }
 
 // ============================================
-// MULTISAMPLE 
+// MODULATION SLOT RENDERING
 // ============================================
-/**
- * Renders multisample keyboard + editor
- * Uses existing WAVParser, proper canvas timing, clearAudioData
- */
-function renderMultisampleList() {
-    const { currentEditingPad, presetData, assetCells } = window.BitboxerData;
+function renderModSlots(padData) {
+    const container = document.getElementById('modSlotsContainer');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (!Array.isArray(padData.modsources)) {
+        padData.modsources = [];
+    }
+
+    padData.modsources.forEach((mod, index) => {
+        container.appendChild(createModSlotElement(padData, mod, index));
+    });
+}
+
+function createModSlotElement(padData, mod, index) {
+    const slot = document.createElement('div');
+    slot.className = 'mod-slot';
+    slot.innerHTML = `
+        <select class="select mod-src" data-index="${index}"></select>
+        <span>→</span>
+        <select class="select mod-dest" data-index="${index}"></select>
+        <input type="range" class="slider mod-amount" min="-1000" max="1000" step="1" value="${mod.amount || 0}" data-index="${index}">
+        <span class="mod-amount-val">${mod.amount || 0}</span>
+        <button class="btn btn-small mod-remove" data-index="${index}">×</button>
+    `;
+
+    updateModSlotAppearance(slot, padData, mod, index);
+
+    const srcSelect = slot.querySelector('.mod-src');
+    const destSelect = slot.querySelector('.mod-dest');
+    const amountSlider = slot.querySelector('.mod-amount');
+    const amountVal = slot.querySelector('.mod-amount-val');
+    const removeBtn = slot.querySelector('.mod-remove');
+
+    srcSelect.onchange = () => {
+        padData.modsources[index].src = srcSelect.value;
+        renderModSlots(padData);
+    };
+    destSelect.onchange = () => {
+        padData.modsources[index].dest = destSelect.value;
+    };
+    amountSlider.oninput = () => {
+        padData.modsources[index].amount = amountSlider.value;
+        amountVal.textContent = amountSlider.value;
+    };
+    removeBtn.onclick = () => removeModSlot(index);
+
+    return slot;
+}
+
+function updateModSlotAppearance(slot, padData, mod, index) {
+    const { MOD_SOURCES, MOD_DESTINATIONS } = window.BITBOXER_CONFIG;
+    const srcSelect = slot.querySelector('.mod-src');
+    const destSelect = slot.querySelector('.mod-dest');
+
+    srcSelect.innerHTML = MOD_SOURCES.map(src =>
+        `<option value="${src.value}" ${src.value === mod.src ? 'selected' : ''}>${src.label}</option>`
+    ).join('');
+
+    const cellmode = padData.params.multisammode === '1' ? '0-multi' : (padData.params.cellmode || '0');
+    const destinations = MOD_DESTINATIONS[cellmode] || MOD_DESTINATIONS['0'];
+
+    destSelect.innerHTML = destinations.map(dest =>
+        `<option value="${dest.value}" ${dest.value === mod.dest ? 'selected' : ''}>${dest.label}</option>`
+    ).join('');
+}
+
+function addModSlot() {
+    const { currentEditingPad, presetData } = window.BitboxerData;
     if (!currentEditingPad) return;
 
     const row = parseInt(currentEditingPad.dataset.row);
     const col = parseInt(currentEditingPad.dataset.col);
     const padData = presetData.pads[row][col];
 
-    const multiTab = document.getElementById('tab-multi');
-    if (!multiTab) return;
-    
-    const paramSections = multiTab.querySelectorAll('.param-section');
-    const editPanel = document.getElementById('multiEditPanel');
+    if (!Array.isArray(padData.modsources)) {
+        padData.modsources = [];
+    }
 
-    console.log('=== renderMultisampleList DEBUG ===');
-    console.log('Pad:', row, col);
-    console.log('padData.params.multisammode:', padData.params.multisammode);
+    const nextSlot = padData.modsources.length;
+    padData.modsources.push({
+        src: 'none',
+        dest: 'none',
+        slot: nextSlot,
+        amount: '0'
+    });
 
-    // CHECK MODE FIRST, THEN DECIDE WHAT TO SHOW/HIDE
-    if (padData.params.multisammode !== '1') {
-        console.log('>>> NOT multisample, hiding sections');
-        paramSections.forEach(section => {
-            section.style.display = 'none';
-        });
-        if (editPanel) editPanel.style.display = 'none';
-        
-        // Clear keyboard visualizer selection (but keep asset data)
-        if (window._multiKeyboardViz) {
-            window._multiKeyboardViz.reset();
-        }
+    renderModSlots(padData);
+}
+
+function removeModSlot(index) {
+    const { currentEditingPad, presetData } = window.BitboxerData;
+    if (!currentEditingPad) return;
+
+    const row = parseInt(currentEditingPad.dataset.row);
+    const col = parseInt(currentEditingPad.dataset.col);
+    const padData = presetData.pads[row][col];
+
+    padData.modsources.splice(index, 1);
+    renderModSlots(padData);
+}
+
+function updateModalIcon(padData) {
+    const icon = document.getElementById('modalIcon');
+    if (!icon) return;
+
+    if (padData.params.multisammode === '1') {
+        icon.textContent = '🎹';
         return;
     }
 
-    // IS multisample - show everything
-    console.log('>>> IS multisample, showing sections');
-    paramSections.forEach(section => {
-        section.style.display = 'block';
-    });
+    const mode = padData.params.cellmode || '0';
+    const icons = {
+        '0': '🔊',
+        '1': '📏',
+        '2': '✂️',
+        '3': '✨'
+    };
+    icon.textContent = icons[mode] || '🔊';
+}
 
+async function initSampleEditor(padData) {
+    if (!window.BitboxerSampleEditor) {
+        window.BitboxerSampleEditor = new SampleEditor();
+        await window.BitboxerSampleEditor.init('waveformCanvas');
+
+        window.BitboxerSampleEditor.scrollZoomBar = new ScrollZoomBar(
+            window.BitboxerSampleEditor.renderer,
+            () => window.BitboxerSampleEditor.render()
+        );
+        window.BitboxerSampleEditor.scrollZoomBar.init('scrollZoomCanvas');
+    }
+
+    const mode = padData.params.multisammode === '1' ? '0' : (padData.params.cellmode || '0');
+    window.BitboxerSampleEditor.setMode(mode);
+
+    if (!padData.filename || padData.params.multisammode === '1') {
+        window.BitboxerSampleEditor.clearAudioData();
+        window.BitboxerSampleEditor.render();
+        return;
+    }
+
+    const wavName = padData.filename.split(/[/\\]/).pop();
+    const file = window._lastImportedFiles?.get(wavName);
+    if (!file) {
+        window.BitboxerSampleEditor.clearAudioData();
+        window.BitboxerSampleEditor.render();
+        return;
+    }
+
+    const audioBuffer = await window.BitboxerSampleEditor.loadSample(file);
+    if (!audioBuffer) {
+        window.BitboxerSampleEditor.clearAudioData();
+        window.BitboxerSampleEditor.render();
+        return;
+    }
+
+    window.BitboxerSampleEditor.markerController.syncFromPadParams(padData);
+    window.BitboxerSampleEditor.updateGranularParams();
+    window.BitboxerSampleEditor.render();
+
+    if (padData.params.multisammode === '1') {
+        renderMultisampleList();
+    }
+}
+
+function renderMultisampleList() {
+    const { currentEditingPad, assetCells } = window.BitboxerData;
+    const container = document.getElementById('multiAssetList');
+    if (!container || !currentEditingPad) return;
+
+    const row = parseInt(currentEditingPad.dataset.row);
+    const col = parseInt(currentEditingPad.dataset.col);
     const assets = assetCells.filter(asset =>
         parseInt(asset.params.asssrcrow) === row &&
         parseInt(asset.params.asssrccol) === col
     );
 
-    console.log('>>> Found', assets.length, 'assets for this pad');
-
-    parseAssetsWAVMetadata(assets).then(() => {
-        console.log('>>> After parseAssetsWAVMetadata, creating/updating visualizer');
-        
-        if (!window._multiKeyboardViz) {
-            console.log('>>> Creating new KeyboardVisualizer');
-            window._multiKeyboardViz = new KeyboardVisualizer('keyboardCanvas', 'keyboardScrollCanvas');
-            window._multiKeyboardViz.onAssetSelected = async (asset) => {
-                await loadMultisampleAssetToEditor(asset);
-                playSelectedMultisampleAsset();
-            };
-            window._multiKeyboardViz.onEmptyKeySelected = async (midi) => {
-                const targetPad = window.BitboxerData.currentEditingPad;
-                if (!targetPad) {
-                    return;
-                }
-
-                if (!window.BitboxerSampleBrowser?.openForMultisample) {
-                    window.BitboxerUtils.setStatus('Sample browser unavailable. Use Chrome or Edge for local folder access.', 'error');
-                    return;
-                }
-
-                try {
-                    await window.BitboxerSampleBrowser.openForMultisample(targetPad, {
-                        rootNote: midi,
-                        keyRangeBottom: midi,
-                        keyRangeTop: midi,
-                        velRangeBottom: 0,
-                        velRangeTop: 127
-                    });
-                } catch (error) {
-                    if (error?.name === 'AbortError') {
-                        return;
-                    }
-                    console.error('Multisample add-layer browser error:', error);
-                    window.BitboxerUtils.setStatus(`Multisample browser error: ${error.message}`, 'error');
-                }
-            };
-        } else {
-            console.log('>>> Reusing existing KeyboardVisualizer');
-        }
-        
-        console.log('>>> Calling setAssets on visualizer');
-        window._multiKeyboardViz.setAssets(assets);
-    });
-}
-
-// ============================================
-// MODULATION SLOT RENDERING
-// ============================================
-/**
- * Renders all modulation slots for a pad
- * 
- * @param {Object} padData - Pad data containing modsources
- */
-function renderModSlots(padData) {
-    const container = document.getElementById('modSlotContainer');
-    if (!container) return;
-
     container.innerHTML = '';
 
-    const cellmode = padData.params.cellmode || '0';
-    const modsources = padData.modsources || [];
-
-    // Render existing mod slots
-    modsources.forEach((mod, index) => {
-        container.innerHTML += createModSlotHTML(mod, index, cellmode);
-    });
-
-    // Setup event listeners for all slots
-    setupModSlotListeners();
-
-    // Apply initial appearance to all slots
-    document.querySelectorAll('.mod-slot').forEach(slotElement => {
-        updateModSlotAppearance(slotElement);
-    });
-}
-
-/**
- * Creates HTML for a single modulation slot
- * 
- * @param {Object} modData - Modulation data
- * @param {number} index - Slot index
- * @param {string} cellmode - Current cell mode
- * @returns {string} HTML string
- */
-function createModSlotHTML(modData, index, cellmode) {
-    const { MOD_SOURCES, MOD_DESTINATIONS } = window.BITBOXER_CONFIG;
-    const destinations = MOD_DESTINATIONS[cellmode] || MOD_DESTINATIONS['0'];
-
-    // Build source dropdown options
-    const sourceOptions = MOD_SOURCES.map(src =>
-        `<option value="${src.value}" ${modData.src === src.value ? 'selected' : ''}>${src.label}</option>`
-    ).join('');
-
-    // Build destination dropdown options
-    const destOptions = destinations.map(dest =>
-        `<option value="${dest.value}" ${modData.dest === dest.value ? 'selected' : ''}>${dest.label}</option>`
-    ).join('');
-
-    // Format amount display
-    const amount = parseInt(modData.amount) || 0;
-    const amountText = (amount >= 0 ? '+' : '') + (amount / 10).toFixed(1) + '%';
-
-    const slotLabel = `${index + 1}`;
-
-    // Check if this slot uses MIDI CC
-    const isMidiCC = modData.src === 'midicc';
-    const midiChannel = modData.mchan !== undefined ? parseInt(modData.mchan) : 0;
-    const midiCCNum = modData.ccnum !== undefined ? parseInt(modData.ccnum) : 0;
-
-    // Generate MIDI channel options (1-16)
-    let channelOptions = '';
-    for (let i = 0; i < 16; i++) {
-        channelOptions += `<option value="${i}" ${midiChannel === i ? 'selected' : ''}>Ch ${i + 1}</option>`;
-    }
-
-    // Generate CC number options (0-127)
-    let ccOptions = '';
-    for (let i = 0; i <= 127; i++) {
-        ccOptions += `<option value="${i}" ${midiCCNum === i ? 'selected' : ''}>CC ${i}</option>`;
-    }
-
-    return `
-        <div class="mod-slot" data-slot="${index}">
-            <div class="mod-slot-number" title="Slot ${index + 1}">${slotLabel}</div>
-            <select class="select mod-source" data-slot="${index}">
-                ${sourceOptions}
-            </select>
-            <div class="mod-amount">
-                <input type="range" class="slider mod-amount-slider" data-slot="${index}" 
-                       min="-1000" max="1000" value="${amount}">
-                <span class="mod-amount-val" data-slot="${index}">${amountText}</span>
-            </div>
-            <select class="select mod-dest" data-slot="${index}">
-                ${destOptions}
-            </select>
-            <div></div>
-            <button class="mod-remove-btn" data-slot="${index}">×</button>
-        </div>
-        <div class="mod-midicc-config" data-slot="${index}" style="display: ${isMidiCC ? 'grid' : 'none'};">
-            <div></div>
-            <select class="select mod-midicc-channel" data-slot="${index}">
-                ${channelOptions}
-            </select>
-            <span class="mod-midicc-label">+</span>
-            <select class="select mod-midicc-ccnum" data-slot="${index}">
-                ${ccOptions}
-            </select>
-            <div></div>
-            <div></div>
-        </div>
-    `;
-}
-
-/**
- * Sets up event listeners for all modulation slots
- */
-function setupModSlotListeners() {
-    // Source dropdowns
-    document.querySelectorAll('.mod-source').forEach(select => {
-        select.addEventListener('change', (e) => {
-            const slot = parseInt(e.target.dataset.slot);
-            const newSource = e.target.value;
-
-            const { currentEditingPad, presetData } = window.BitboxerData;
-            if (!currentEditingPad || !presetData) return;
-
-            const row = parseInt(currentEditingPad.dataset.row);
-            const col = parseInt(currentEditingPad.dataset.col);
-            const padData = presetData.pads[row][col];
-
-            if (!padData.modsources[slot]) {
-                padData.modsources[slot] = { dest: 'none', src: 'none', slot: '0', amount: '0' };
-            }
-
-            // Update source
-            padData.modsources[slot].src = newSource;
-
-            // Update appearance
-            const slotElement = e.target.closest('.mod-slot');
-            if (slotElement) updateModSlotAppearance(slotElement);
-
-            // Show/hide MIDI CC config
-            const midiccConfig = slotElement?.nextElementSibling;
-            if (midiccConfig && midiccConfig.classList.contains('mod-midicc-config')) {
-                if (newSource === 'midicc') {
-                    midiccConfig.style.display = 'grid';
-                    if (!padData.modsources[slot].mchan) padData.modsources[slot].mchan = '0';
-                    if (!padData.modsources[slot].ccnum) padData.modsources[slot].ccnum = '0';
-                } else {
-                    midiccConfig.style.display = 'none';
-                    delete padData.modsources[slot].mchan;
-                    delete padData.modsources[slot].ccnum;
-                }
-            }
-        });
-    });
-
-    // MIDI CC Channel dropdowns
-    document.querySelectorAll('.mod-midicc-channel').forEach(select => {
-        select.addEventListener('change', (e) => {
-            const slot = parseInt(e.target.dataset.slot);
-            updateModSlot(slot, 'mchan', e.target.value);
-        });
-    });
-
-    // MIDI CC Number dropdowns
-    document.querySelectorAll('.mod-midicc-ccnum').forEach(select => {
-        select.addEventListener('change', (e) => {
-            const slot = parseInt(e.target.dataset.slot);
-            updateModSlot(slot, 'ccnum', e.target.value);
-        });
-    });
-
-    // Destination dropdowns
-    document.querySelectorAll('.mod-dest').forEach(select => {
-        select.addEventListener('change', (e) => {
-            const slot = parseInt(e.target.dataset.slot);
-            const newDest = e.target.value;
-
-            // Validate destination limit (skip validation for 'none')
-            if (newDest !== 'none') {
-                const validation = window.BitboxerUtils.validateModDestination(newDest, slot);
-
-                if (!validation.valid) {
-                    window.BitboxerUtils.setStatus(
-                        `Maximum 3 modulations per destination! ${newDest} already has 3 slots.`, 
-                        'error'
-                    );
-                    // Revert to previous value
-                    const { currentEditingPad, presetData } = window.BitboxerData;
-                    const row = parseInt(currentEditingPad.dataset.row);
-                    const col = parseInt(currentEditingPad.dataset.col);
-                    const previousDest = presetData.pads[row][col].modsources[slot]?.dest || 'none';
-                    e.target.value = previousDest;
-                    return;
-                }
-            }
-
-            updateModSlot(slot, 'dest', newDest);
-
-            // Update appearance immediately
-            const slotElement = e.target.closest('.mod-slot');
-            if (slotElement) updateModSlotAppearance(slotElement);
-
-            // Update slot number to match destination's slot count
-            if (newDest !== 'none') {
-                const { currentEditingPad, presetData } = window.BitboxerData;
-                const row = parseInt(currentEditingPad.dataset.row);
-                const col = parseInt(currentEditingPad.dataset.col);
-                const destSlotNum = presetData.pads[row][col].modsources.filter((mod, idx) =>
-                    mod.dest === newDest && idx <= slot
-                ).length - 1;
-                updateModSlot(slot, 'slot', destSlotNum.toString());
-            }
-        });
-    });
-
-    // Amount sliders
-    document.querySelectorAll('.mod-amount-slider').forEach(slider => {
-        slider.addEventListener('input', (e) => {
-            const slot = parseInt(e.target.dataset.slot);
-            const amount = e.target.value;
-            updateModSlot(slot, 'amount', amount);
-
-            // Update display
-            const display = document.querySelector(`.mod-amount-val[data-slot="${slot}"]`);
-            if (display) {
-                const amountText = (amount >= 0 ? '+' : '') + (amount / 10).toFixed(1) + '%';
-                display.textContent = amountText;
-            }
-        });
-    });
-
-    // Remove buttons
-    document.querySelectorAll('.mod-remove-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const slot = parseInt(e.target.dataset.slot);
-            removeModSlot(slot);
-        });
-    });
-}
-
-/**
- * Updates a field in a modulation slot
- * 
- * @param {number} slot - Slot index
- * @param {string} field - Field name
- * @param {string} value - New value
- */
-function updateModSlot(slot, field, value) {
-    const { currentEditingPad, presetData } = window.BitboxerData;
-    if (!currentEditingPad || !presetData) return;
-
-    const row = parseInt(currentEditingPad.dataset.row);
-    const col = parseInt(currentEditingPad.dataset.col);
-    const padData = presetData.pads[row][col];
-
-    if (!padData.modsources[slot]) {
-        padData.modsources[slot] = { dest: 'none', src: 'none', slot: '0', amount: '0' };
-    }
-
-    padData.modsources[slot][field] = value.toString();
-
-    // Auto-update the destination slot number when dest changes
-    if (field === 'dest' && value !== 'none') {
-        const destSlotNum = padData.modsources.filter((mod, idx) =>
-            mod.dest === value && idx <= slot
-        ).length - 1;
-        padData.modsources[slot].slot = destSlotNum.toString();
-    }
-}
-
-/**
- * Removes a modulation slot
- * 
- * @param {number} slot - Slot index to remove
- */
-function removeModSlot(slot) {
-    const { currentEditingPad, presetData } = window.BitboxerData;
-    if (!currentEditingPad || !presetData) return;
-
-    const row = parseInt(currentEditingPad.dataset.row);
-    const col = parseInt(currentEditingPad.dataset.col);
-    const padData = presetData.pads[row][col];
-
-    padData.modsources.splice(slot, 1);
-
-    // Re-render
-    renderModSlots(padData);
-}
-
-/**
- * Adds a new modulation slot
- */
-function addModSlot() {
-    const { currentEditingPad, presetData, MAX_MOD_SLOTS_PAD } = window.BitboxerData;
-    if (!currentEditingPad || !presetData) return;
-
-    const row = parseInt(currentEditingPad.dataset.row);
-    const col = parseInt(currentEditingPad.dataset.col);
-    const padData = presetData.pads[row][col];
-
-    if (!padData.modsources) padData.modsources = [];
-
-    if (padData.modsources.length >= 12) {
-        window.BitboxerUtils.setStatus('Maximum 12 modulation slots per pad', 'error');
-        return;
-    }
-
-    const newSlot = {
-        dest: 'gaindb',
-        src: 'velocity',
-        slot: '0',
-        amount: '0'
-    };
-
-    // Check if gaindb already has 3 slots
-    const validation = window.BitboxerUtils.validateModDestination('gaindb', -1);
-    if (!validation.valid) {
-        // Default to 'none' if gaindb is full
-        newSlot.dest = 'none';
-        newSlot.src = 'none';
-        window.BitboxerUtils.setStatus('Added slot with no destination (default gaindb is full)', 'success');
-    }
-
-    padData.modsources.push(newSlot);
-    renderModSlots(padData);
-}
-
-/**
- * Updates visual appearance of a modulation slot based on its state
- * Active slots (both source and dest set) are fully visible
- * Inactive slots are dimmed
- * 
- * @param {HTMLElement} slotElement - Slot element to update
- */
-function updateModSlotAppearance(slotElement) {
-    const sourceSelect = slotElement.querySelector('.mod-source');
-    const destSelect = slotElement.querySelector('.mod-dest');
-
-    if (!sourceSelect || !destSelect) return;
-
-    const isActive = sourceSelect.value !== 'none' && destSelect.value !== 'none';
-
-    // Update opacity
-    slotElement.style.opacity = isActive ? '1' : '0.5';
-
-    // Add/remove inactive class
-    if (isActive) {
-        slotElement.classList.remove('inactive');
-    } else {
-        slotElement.classList.add('inactive');
-    }
-}
-
-/**
- * Updates the modal icon based on current pad mode
- */
-function updateModalIcon(padData) {
-    const modalIcon = document.getElementById('modalIcon');
-    if (!modalIcon) return;
-    
-    const isMulti = padData.params.multisammode === '1';
-    const mode = isMulti ? '0-multi' : (padData.params.cellmode || '0');
-    
-    const icons = {
-        '0': '<rect class="cls-1" width="32" height="32" rx="5.96" ry="5.96"/><polygon class="cls-2" points="25.78 16 25.78 15.11 24.89 15.11 24.89 13.33 24 13.33 24 15.11 23.12 15.11 23.12 16 22.23 16 22.23 17.78 21.34 17.78 21.34 16 20.45 16 20.45 13.33 19.56 13.33 19.56 9.77 18.67 9.77 18.67 13.33 17.78 13.33 17.78 16 16.89 16 16.89 21.34 16 21.34 16 20.45 16 19.56 16 18.67 16 17.78 16 16.89 15.11 16.89 15.11 16 15.11 15.11 14.22 15.11 14.22 9.77 13.33 9.77 13.33 6.22 12.44 6.22 12.44 9.77 11.55 9.77 11.55 16 10.66 16 9.77 16 9.77 15.11 8.88 15.11 8.88 13.33 8 13.33 8 15.11 7.11 15.11 7.11 16 5.33 16 5.33 15.11 4.44 15.11 4.44 16 3.55 16 3.55 16.89 6.22 16.89 6.22 17.78 7.11 17.78 7.11 16.89 8 16.89 8 16 8.88 16 8.88 16.89 9.77 16.89 9.77 19.56 10.66 19.56 10.66 17.78 11.55 17.78 11.55 16.89 12.44 16.89 12.44 11.55 13.33 11.55 13.33 16.89 14.22 16.89 14.22 17.78 15.11 17.78 15.11 23.12 16 23.12 16 25.78 16.89 25.78 16.89 23.12 17.78 23.12 17.78 16.89 18.67 16.89 18.67 15.11 19.56 15.11 19.56 16.89 20.45 16.89 20.45 18.67 21.34 18.67 21.34 19.56 22.23 19.56 22.23 18.67 23.12 18.67 23.12 16.89 24 16.89 24 16 24.89 16 24.89 16.89 25.78 16.89 25.78 17.78 26.67 17.78 26.67 16.89 28.45 16.89 28.45 16 25.78 16"/>',
-        '1': '<rect class="cls-1" width="32" height="32" rx="5.96" ry="5.96"/><path class="cls-2" d="M28.9,25.34V6.66H3.1v18.68h25.79ZM28.01,15.56h-2.67v-1.78h-.89v-1.78h-.89v1.78h-.89v1.78h-2.67v-1.78h-.89v-1.78h-.89v1.78h-.89v1.78h-2.67v-1.78h-.89v-1.78h-.89v1.78h-.89v1.78h-2.67v-1.78h-.89v-1.78h-.89v1.78h-.89v1.78h-2.67v-6.23h24.01v6.23ZM3.99,16.44h2.67v1.78h.89v1.78h.89v-1.78h.89v-1.78h2.67v1.78h.89v1.78h.89v-1.78h.89v-1.78h2.67v1.78h.89v1.78h.89v-1.78h.89v-1.78h2.67v1.78h.89v1.78h.89v-1.78h.89v-1.78h2.67v6.23H3.99v-6.23Z"/>',
-        '2': '<rect class="cls-1" width="32" height="32" rx="5.96" ry="5.96"/><polygon class="cls-2" points="12.44 4.44 11.55 4.44 11.55 27.56 20.45 27.56 20.45 20.45 12.44 20.45 12.44 4.44"/>',
-        '3': '<rect class="cls-1" width="32" height="32" rx="5.96" ry="5.96"/><path class="cls-2" d="M3.1,5.77v20.46h25.79V5.77H3.1ZM28.01,24.45h-.89v.89H5.77v-.89h-1.78V6.66h11.56v.89h1.78v-.89h10.67v17.79Z"/><rect class="cls-2" x="5.77" y="23.56" width=".89" height=".89"/><rect class="cls-2" x="6.66" y="22.67" width=".89" height=".89"/><rect class="cls-2" x="7.55" y="20.89" width=".89" height=".89"/><rect class="cls-2" x="8.44" y="19.11" width=".89" height=".89"/><rect class="cls-2" x="9.33" y="17.33" width=".89" height=".89"/><rect class="cls-2" x="10.22" y="14.67" width=".89" height=".89"/><rect class="cls-2" x="11.11" y="12.89" width=".89" height=".89"/><rect class="cls-2" x="12" y="11.11" width=".89" height=".89"/><rect class="cls-2" x="12.89" y="9.33" width=".89" height=".89"/><rect class="cls-2" x="13.78" y="8.44" width=".89" height=".89"/><rect class="cls-2" x="14.67" y="7.55" width=".89" height=".89"/><rect class="cls-2" x="17.33" y="7.55" width=".89" height=".89"/><rect class="cls-2" x="18.22" y="8.44" width=".89" height=".89"/><rect class="cls-2" x="19.11" y="9.33" width=".89" height=".89"/><rect class="cls-2" x="20" y="11.11" width=".89" height=".89"/><rect class="cls-2" x="20.89" y="12.89" width=".89" height=".89"/><rect class="cls-2" x="21.78" y="14.67" width=".89" height=".89"/><rect class="cls-2" x="22.67" y="17.33" width=".89" height=".89"/><rect class="cls-2" x="23.56" y="19.11" width=".89" height=".89"/><rect class="cls-2" x="24.45" y="20.89" width=".89" height=".89"/><rect class="cls-2" x="25.34" y="22.67" width=".89" height=".89"/><rect class="cls-2" x="26.23" y="23.56" width=".89" height=".89"/>',
-        '0-multi': '<rect class="cls-1" width="32" height="32" rx="5.96" ry="5.96"/><polygon class="cls-2" points="19.11 8 17.33 8 17.33 8.88 16.44 8.88 16.44 9.77 15.56 9.77 15.56 10.66 14.67 10.66 14.67 11.55 13.78 11.55 13.78 12.44 12.89 12.44 12.89 13.33 12 13.33 12 14.22 10.22 14.22 10.22 13.33 9.33 13.33 9.33 12.44 8.44 12.44 8.44 11.55 7.55 11.55 7.55 10.66 6.66 10.66 6.66 9.77 5.77 9.77 5.77 8.88 4.88 8.88 4.88 8 3.1 8 3.1 24 5.77 24 5.77 13.33 6.66 13.33 6.66 14.22 7.55 14.22 7.55 15.11 8.44 15.11 8.44 16 9.33 16 9.33 16.89 10.22 16.89 10.22 17.78 12 17.78 12 16.89 12.89 16.89 12.89 16 13.78 16 13.78 15.11 14.67 15.11 14.67 14.22 15.56 14.22 15.56 13.33 16.44 13.33 16.44 24 19.11 24 19.11 8"/><polygon class="cls-2" points="27.12 15.11 27.12 16 26.23 16 26.23 16.89 25.34 16.89 25.34 17.78 23.56 17.78 23.56 16.89 22.67 16.89 22.67 16 21.78 16 21.78 15.11 20 15.11 20 16.89 20.89 16.89 20.89 17.78 21.78 17.78 21.78 18.67 22.67 18.67 22.67 20.45 21.78 20.45 21.78 21.34 20.89 21.34 20.89 22.23 20 22.23 20 24 21.78 24 21.78 23.12 22.67 23.12 22.67 22.23 23.56 22.23 23.56 21.34 25.34 21.34 25.34 22.23 26.23 22.23 26.23 23.12 27.12 23.12 27.12 24 28.9 24 28.9 22.23 28.01 22.23 28.01 21.34 27.12 21.34 27.12 20.45 26.23 20.45 26.23 18.67 27.12 18.67 27.12 17.78 28.01 17.78 28.01 16.89 28.9 16.89 28.9 15.11 27.12 15.11"/>'
-    };
-    
-    modalIcon.innerHTML = icons[mode] || icons['0'];
-}
-
-/**
- * Initializes the sample editor canvas and UI
- * This function handles both one-time setup and per-call UI updates
- */
-async function initSampleEditor(padData) {
-    const container = document.getElementById('sampleEditorContainer');
-    if (!container) return;
-
-    const cellmode = padData.params.cellmode;
-    const isMulti = padData.params.multisammode === '1';
-    
-    // Hide container for multisample or empty pads
-    if (isMulti || !padData.filename) {
-        container.style.display = 'none';
-        return;
-    }
-
-    // Show container
-    container.style.display = 'block';
-    container.style.minHeight = '200px';
-    container.offsetHeight;
-
-    // Clear previous pad's audio data BEFORE loading new pad
-    if (window.BitboxerSampleEditor) {
-        window.BitboxerSampleEditor.clearAudioData();
-    }
-
-    // Check if we need full initialization
-    const { currentEditingPad, presetData } = window.BitboxerData;
-    const row = parseInt(currentEditingPad.dataset.row);
-    const col = parseInt(currentEditingPad.dataset.col);
-    const currentPadId = `${row}-${col}`;
-    const needsInitialization = (window._lastInitializedPad !== currentPadId);
-
-    if (needsInitialization) {
-        console.log('Initializing sample editor for pad:', currentPadId);
-        window._lastInitializedPad = currentPadId;
-        
-        // Initialize editor
-        await window.BitboxerSampleEditor.init('waveformCanvas');
-        
-        // Load sample
-        const wavName = padData.filename.split(/[/\\]/).pop();
-        let sampleLoaded = false;
-        
-        if (window._lastImportedFiles && window._lastImportedFiles.has(wavName)) {
-            const wavFile = window._lastImportedFiles.get(wavName);
-            sampleLoaded = await window.BitboxerSampleEditor.loadSample(wavFile);
-        }
-        
-        if (!sampleLoaded) {
-            const canvas = document.getElementById('waveformCanvas');
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#d0c2b9';
-            ctx.font = '14px monospace';
-            ctx.fillText('Sample not loaded. Import the sample first.', 10, 100);
-            return;
-        }
-        
-        // Update slider max values now that audio is loaded
-        window.BitboxerPadEditor.updateSliderMaxValues(padData);
-        
-        // Setup playback controls (ONE-TIME)
-        document.getElementById('playBtn').onclick = () => 
-            window.BitboxerSampleEditor.play();
-        document.getElementById('stopBtn').onclick = () => 
-            window.BitboxerSampleEditor.stop();
-        document.getElementById('playSelectionBtn').onclick = () => {
-            if (window.BitboxerSampleEditor.selectionStart !== null) {
-                window.BitboxerSampleEditor.playSelection();
-            } else {
-                window.BitboxerUtils.setStatus('No selection - drag in waveform', 'error');
+    assets.forEach(asset => {
+        const item = document.createElement('button');
+        item.className = 'btn multi-asset-item';
+        item.textContent = asset.filename.split(/[/\\]/).pop();
+        item.onclick = async () => {
+            await loadMultisampleAssetToEditor(asset);
+            if (window._multiKeyboardViz) {
+                window._multiKeyboardViz.selectAsset(asset);
             }
         };
-        
-        // Setup unified scroll-zoom bar (ONE-TIME)
-        if (!window.BitboxerSampleEditor.scrollZoomBar) {
-            window.BitboxerSampleEditor.scrollZoomBar = new ScrollZoomBar(
-                window.BitboxerSampleEditor.renderer,
-                () => {
-                    // Callback when zoom/scroll changes
-                    const zoomValue = document.getElementById('zoomValue');
-                    if (zoomValue) {
-                        const zoom = window.BitboxerSampleEditor.renderer.zoom;
-                        zoomValue.textContent = zoom.toFixed(1) + 'x zoom';
-                    }
-                    window.BitboxerSampleEditor.render();
-                }
-            );
+        container.appendChild(item);
+    });
 
-            window.BitboxerSampleEditor.scrollZoomBar.init('scrollZoomCanvas');
+    const addLayerBtn = document.getElementById('addLayerBtn');
+    if (addLayerBtn) {
+        addLayerBtn.onclick = async () => {
+            if (!window.BitboxerSampleBrowser) {
+                window.BitboxerUtils.setStatus('Sample browser unavailable. Use Chrome or Edge for local folder access.', 'error');
+                return;
+            }
 
-            // Handle window resize
-            window.addEventListener('resize', () => {
-                if (window.BitboxerSampleEditor.scrollZoomBar) {
-                    window.BitboxerSampleEditor.scrollZoomBar.resize();
+            await window.BitboxerSampleBrowser.open({
+                mode: 'multisample',
+                targetPad: currentEditingPad,
+                assignment: {
+                    rootNote: 60,
+                    keyRangeBottom: 60,
+                    keyRangeTop: 60,
+                    velRangeBottom: 0,
+                    velRangeTop: 127
                 }
             });
-        }
-                
-        // Setup snap toggle (ONE-TIME)
-        const snapCheckbox = document.getElementById('snapToZeroCheckbox');
-        if (snapCheckbox) {
-            snapCheckbox.checked = true;
-            snapCheckbox.addEventListener('change', () => {
-                if (window.BitboxerSampleEditor && window.BitboxerSampleEditor.markerController) {
-                    window.BitboxerSampleEditor.markerController.snapToZeroCrossingEnabled = snapCheckbox.checked;
-                }
-            });
-        }
-    } else {
-        // NOT first time - just reload the sample for this pad
-        console.log('Reloading sample for existing pad:', currentPadId);
-        
-        const wavName = padData.filename.split(/[/\\]/).pop();
-        let sampleLoaded = false;
-        
-        if (window._lastImportedFiles && window._lastImportedFiles.has(wavName)) {
-            const wavFile = window._lastImportedFiles.get(wavName);
-            sampleLoaded = await window.BitboxerSampleEditor.loadSample(wavFile);
-        }
-        
-        if (!sampleLoaded) {
-            const canvas = document.getElementById('waveformCanvas');
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#d0c2b9';
-            ctx.font = '14px monospace';
-            ctx.fillText('Sample not loaded. Import the sample first.', 10, 100);
-            return;
-        }
-        
-        // Update slider max values
-        window.BitboxerPadEditor.updateSliderMaxValues(padData);
+        };
     }
-
-    // ALWAYS: Update mode-specific UI
-    window.BitboxerSampleEditor.setMode(cellmode);
-    
-    // Setup mode-specific controls
-    const slicerControls = document.getElementById('slicerControls');
-    const granularControls = document.getElementById('granularControls');
-    const clipControls = document.getElementById('clipControls');
-    const editorHints = document.getElementById('editorHints');
-    
-    // Hide all
-    if (slicerControls) slicerControls.style.display = 'none';
-    if (granularControls) granularControls.style.display = 'none';
-    if (clipControls) clipControls.style.display = 'none';
-    
-    // Show appropriate controls
-    if (cellmode === '2') {
-        // SLICER MODE - ADVANCED
-        if (slicerControls) slicerControls.style.display = 'flex';
-        if (editorHints) {
-            editorHints.textContent = 'Shift+Click: add slice | Right-click: delete | Auto-detects on sensitivity change';
-        }
-
-        const updateSliceCount = () => {
-            const count = window.BitboxerSampleEditor.markerController.sliceMarkers.length;
-            const sliceCount = document.getElementById('sliceCount');
-            if (sliceCount) {
-                sliceCount.textContent = `${count} slice${count !== 1 ? 's' : ''}`;
-            }
-        };
-        updateSliceCount();
-
-        // Algorithm selection
-        const algorithmSelect = document.getElementById('onsetAlgorithmSelect');
-        const sensitivitySlider = document.getElementById('onsetSensitivitySlider');
-        const sensitivityValue = document.getElementById('onsetSensitivityValue');
-        const minDistanceSlider = document.getElementById('minSliceDistanceSlider');
-        const minDistanceValue = document.getElementById('minSliceDistanceValue');
-        const gridTempoInput = document.getElementById('gridSliceTempoInput');
-        const gridDivisionSelect = document.getElementById('gridSliceDivisionSelect');
-        const gridOffsetMsInput = document.getElementById('gridSliceOffsetMsInput');
-        const applyGridSlicesBtn = document.getElementById('applyGridSlicesBtn');
-
-        // Store current settings
-        let currentAlgorithm = 'flux';
-        let currentSensitivity = 0.5;
-        let currentMinDistance = 1000;
-        let autoDetectTimer = null;
-
-        // Debounced auto-detect function
-        const triggerAutoDetect = () => {
-            if (autoDetectTimer) clearTimeout(autoDetectTimer);
-
-            autoDetectTimer = setTimeout(() => {
-                window.BitboxerUtils.setStatus('Auto-analyzing...', 'info');
-
-                // Run in next tick to allow UI update
-                setTimeout(() => {
-                    try {
-                        window.BitboxerSampleEditor.markerController.autoDetectSlices(
-                            currentAlgorithm,
-                            currentSensitivity,
-                            currentMinDistance
-                        );
-                        updateSliceCount();
-                        window.BitboxerSampleEditor.render();
-                        window.BitboxerUtils.setStatus(
-                            `Detected ${window.BitboxerSampleEditor.markerController.sliceMarkers.length} slices`,
-                            'success'
-                        );
-                    } catch (error) {
-                        console.error('Onset detection error:', error);
-                        window.BitboxerUtils.setStatus(`Detection failed: ${error.message}`, 'error');
-                    }
-                }, 10);
-            }, AUTODETECT_DEBOUNCE_MS);
-        };
-
-        if (algorithmSelect) {
-            algorithmSelect.value = currentAlgorithm;
-            algorithmSelect.onchange = () => {
-                currentAlgorithm = algorithmSelect.value;
-                triggerAutoDetect();
-            };
-        }
-
-        if (sensitivitySlider && sensitivityValue) {
-            sensitivitySlider.value = 50;
-            sensitivityValue.textContent = '50%';
-
-            // Update display on input
-            sensitivitySlider.oninput = () => {
-                currentSensitivity = parseInt(sensitivitySlider.value) / 100;
-                sensitivityValue.textContent = sensitivitySlider.value + '%';
-            };
-
-            // Trigger auto-detect on release
-            sensitivitySlider.onchange = () => {
-                triggerAutoDetect();
-            };
-        }
-
-        if (minDistanceSlider && minDistanceValue) {
-            minDistanceSlider.value = 1000;
-            const sampleRate = window.BitboxerSampleEditor.audioEngine.audioBuffer?.sampleRate || 44100;
-            minDistanceValue.textContent = (1000 / sampleRate * 1000).toFixed(0) + ' ms';
-
-            minDistanceSlider.oninput = () => {
-                currentMinDistance = parseInt(minDistanceSlider.value);
-                const ms = (currentMinDistance / sampleRate * 1000).toFixed(0);
-                minDistanceValue.textContent = ms + ' ms';
-            };
-
-            minDistanceSlider.onchange = () => {
-                triggerAutoDetect();
-            };
-        }
-
-        if (gridTempoInput) {
-            gridTempoInput.value = presetData.tempo || '120';
-            gridTempoInput.onchange = () => {
-                const bpm = parseInt(gridTempoInput.value, 10);
-                if (!Number.isNaN(bpm) && bpm >= 20 && bpm <= 300) {
-                    presetData.tempo = bpm.toString();
-                } else {
-                    gridTempoInput.value = presetData.tempo || '120';
-                }
-            };
-        }
-
-        if (gridDivisionSelect) {
-            gridDivisionSelect.value = gridDivisionSelect.value || '1/16';
-        }
-
-        if (gridOffsetMsInput) {
-            gridOffsetMsInput.value = '0';
-        }
-
-        if (applyGridSlicesBtn) {
-            applyGridSlicesBtn.onclick = () => {
-                const audioBuffer = window.BitboxerSampleEditor.audioEngine.audioBuffer;
-                if (!audioBuffer) {
-                    window.BitboxerUtils.setStatus('No audio loaded for grid slicing', 'error');
-                    return;
-                }
-
-                const bpm = parseInt(gridTempoInput?.value || presetData.tempo || '120', 10);
-                if (Number.isNaN(bpm) || bpm < 20 || bpm > 300) {
-                    window.BitboxerUtils.setStatus('Grid BPM must be between 20 and 300', 'error');
-                    return;
-                }
-
-                const division = gridDivisionSelect?.value || '1/16';
-                const offsetMs = parseFloat(gridOffsetMsInput?.value || '0');
-                const safeOffsetMs = Number.isNaN(offsetMs) ? 0 : Math.max(0, offsetMs);
-                const offsetSamples = Math.round((safeOffsetMs / 1000) * audioBuffer.sampleRate);
-
-                const existingCount = window.BitboxerSampleEditor.markerController.sliceMarkers.length;
-                if (existingCount > 1 && !confirm('Replace current slices with a regular grid?')) {
-                    return;
-                }
-
-                try {
-                    let positions = window.BitboxerGridSlicer.computeGridSlicePositions({
-                        sampleRate: audioBuffer.sampleRate,
-                        totalSamples: audioBuffer.length,
-                        bpm: bpm,
-                        division: division,
-                        offsetSamples: offsetSamples
-                    });
-
-                    const channelData = window.BitboxerSampleEditor.renderer.waveformData?.channelData?.[0];
-                    if (window.BitboxerSampleEditor.markerController.snapToZeroCrossingEnabled && channelData) {
-                        positions = positions.map((sample, index) => {
-                            if (index === 0) return 0;
-                            return window.BitboxerSampleEditor.markerController.findZeroCrossing(sample, channelData);
-                        });
-                    }
-
-                    positions = [...new Set(positions)]
-                        .filter((sample) => sample >= 0 && sample < audioBuffer.length)
-                        .sort((a, b) => a - b);
-
-                    if (!positions.includes(0)) {
-                        positions.unshift(0);
-                    }
-
-                    if (positions.length > 512) {
-                        positions = positions.slice(0, 512);
-                        window.BitboxerUtils.setStatus('Grid limited to 512 slices', 'info');
-                    }
-
-                    if (positions.length === 0) {
-                        window.BitboxerUtils.setStatus('Grid produced no slice positions', 'error');
-                        return;
-                    }
-
-                    window.BitboxerSampleEditor.markerController.sliceMarkers = positions;
-                    window.BitboxerSampleEditor.markerController.updateSlicesToPad();
-                    window.BitboxerSampleEditor.render();
-                    updateSliceCount();
-
-                    presetData.tempo = bpm.toString();
-                    if (gridTempoInput) {
-                        gridTempoInput.value = bpm.toString();
-                    }
-
-                    window.BitboxerUtils.setStatus(
-                        `Applied grid: ${positions.length} slices at ${bpm} BPM (${division})`,
-                        'success'
-                    );
-                } catch (error) {
-                    console.error('Grid slicing error:', error);
-                    window.BitboxerUtils.setStatus(`Grid slicing failed: ${error.message}`, 'error');
-                }
-            };
-        }
-
-        // Clear button
-        const clearSlicesBtn = document.getElementById('clearSlicesBtn');
-        if (clearSlicesBtn) {
-            clearSlicesBtn.onclick = () => {
-                if (confirm('Clear all slices?')) {
-                    window.BitboxerSampleEditor.markerController.sliceMarkers = [];
-                    window.BitboxerSampleEditor.markerController.updateSlicesToPad();
-                    window.BitboxerSampleEditor.render();
-                    updateSliceCount();
-                }
-            };
-        }
-    } 
-    else if (cellmode === '3') {
-        // GRANULAR MODE
-        if (granularControls) granularControls.style.display = 'flex';
-        if (editorHints) {
-            editorHints.textContent = 'Yellow box = grain window | Drag markers to adjust';
-        }
-        
-    } else if (cellmode === '1') {
-        // CLIP MODE
-        if (clipControls) clipControls.style.display = 'flex';
-        if (editorHints) {
-            editorHints.textContent = 'Blue lines = beats | Adjust Beat Count slider';
-        }
-        
-        const { currentEditingPad, presetData } = window.BitboxerData;
-        const row = parseInt(currentEditingPad.dataset.row);
-        const col = parseInt(currentEditingPad.dataset.col);
-        const pad = presetData.pads[row][col];
-        
-        const updateBeatInfo = () => {
-            const beatCount = parseInt(pad.params.beatcount) || 0;
-            const tempo = presetData.tempo || '120';
-            const beatInfo = document.getElementById('beatInfo');
-            
-            if (beatInfo) {
-                beatInfo.innerHTML = `${beatCount === 0 ? 'Auto' : beatCount + ' beats'} @ <input type="number" id="tempoInput" min="20" max="300" value="${tempo}" style="width: 50px; background: var(--color-bg-secondary); color: var(--color-text-primary); border: 1px solid var(--color-border); border-radius: 3px; padding: 2px;"> BPM`;
-                
-                const tempoInput = document.getElementById('tempoInput');
-                if (tempoInput) {
-                    tempoInput.addEventListener('change', (e) => {
-                        const newTempo = parseInt(e.target.value);
-                        if (newTempo >= 20 && newTempo <= 300) {
-                            presetData.tempo = newTempo.toString();
-                            window.BitboxerSampleEditor.render();
-                        }
-                    });
-                }
-            }
-        };
-        updateBeatInfo();
-        
-        let tapTimes = [];
-        const tapTempoBtn = document.getElementById('tapTempoBtn');
-        if (tapTempoBtn) {
-            tapTempoBtn.onclick = () => {
-                const now = Date.now();
-                tapTimes.push(now);
-                
-                if (tapTimes.length > 5) tapTimes.shift();
-                
-                tapTempoBtn.textContent = `🎵 Tap ${tapTimes.length}/5`;
-                
-                if (tapTimes.length >= 5) {
-                    let totalInterval = 0;
-                    for (let i = 1; i < tapTimes.length; i++) {
-                        totalInterval += tapTimes[i] - tapTimes[i-1];
-                    }
-                    const avgInterval = totalInterval / 4;
-                    const bpm = Math.round(60000 / avgInterval);
-                    
-                    presetData.tempo = bpm.toString();
-                    updateBeatInfo();
-                    
-                    tapTempoBtn.textContent = `✓ ${bpm} BPM`;
-                    setTimeout(() => {
-                        tapTimes = [];
-                        tapTempoBtn.textContent = '🎵 Tap Tempo';
-                    }, 1000);
-                }
-            };
-        }
-        
-        const detectBeatsBtn = document.getElementById('detectBeatsBtn');
-        if (detectBeatsBtn) {
-            detectBeatsBtn.onclick = () => {
-                const audioBuffer = window.BitboxerSampleEditor.audioEngine.audioBuffer;
-                if (!audioBuffer) return;
-                
-                const durationSec = audioBuffer.length / audioBuffer.sampleRate;
-                const tempo = parseFloat(presetData.tempo) || 120;
-                const beatsPerSec = tempo / 60;
-                const estimatedBeats = Math.round(durationSec * beatsPerSec);
-                
-                pad.params.beatcount = estimatedBeats.toString();
-                
-                const beatcountSlider = document.getElementById('beatcount');
-                if (beatcountSlider) {
-                    beatcountSlider.value = estimatedBeats;
-                    window.BitboxerUtils.updateParamDisplay('beatcount', estimatedBeats);
-                }
-                
-                window.BitboxerSampleEditor.render();
-                updateBeatInfo();
-            };
-        }
-        
-    } else {
-        // SAMPLE MODE
-        if (editorHints) {
-            editorHints.textContent = 'Drag markers to adjust positions. Mouse wheel to zoom.';
-        }
-    }
-    
-    // Final render
-    window.BitboxerSampleEditor.render();
 }
 
-// ============================================
-// NEW: Parse WAV Metadata Using Existing Parser
-// ============================================
+async function parseAssetsWAVMetadata() {
+    const { assetCells } = window.BitboxerData;
+    if (!Array.isArray(assetCells) || assetCells.length === 0) return;
 
-/**
- * Parses WAV metadata for all assets using EXISTING WAVParser
- * FIXED: Only parses if metadata doesn't exist - preserves user edits
- */
-async function parseAssetsWAVMetadata(assets) {
-    for (const asset of assets) {
-        // CRITICAL FIX: Skip if metadata already exists (preserves user edits)
-        if (asset.wavMetadata) {
-            console.log(`âœ" Skipping parse: ${asset.filename.split(/[/\\]/).pop()} (metadata exists)`);
-            continue;
-        }
-        
-        const wavName = asset.filename.split(/[/\\]/).pop();
-        
-        // *** ADD THIS DEBUG ***
-        console.log('SECOND parseAssetsWAVMetadata() at line 1402');
-        console.log('=== DEBUG: Looking for WAV ===');
-        console.log('wavName:', wavName);
-        console.log('window._lastImportedFiles exists?', !!window._lastImportedFiles);
-        console.log('Cache size:', window._lastImportedFiles?.size);
-        console.log('Cache has this file?', window._lastImportedFiles?.has(wavName));
-        console.log('Cache keys:', Array.from(window._lastImportedFiles?.keys() || []));
-        // *** END DEBUG ***
+    for (const asset of assetCells) {
+        const wavName = (asset.filename || '').split(/[/\\]/).pop();
+        const file = window._lastImportedFiles?.get(wavName);
+        if (!file) continue;
 
-
-        // Find WAV file in cache
-        if (window._lastImportedFiles && window._lastImportedFiles.has(wavName)) {
-            const wavFile = window._lastImportedFiles.get(wavName);
-            
-            try {
-                const arrayBuffer = await wavFile.arrayBuffer();
-                const metadata = window.BitboxerFileHandler.WAVParser.parseMetadata(arrayBuffer);
-                
-                console.log(`Parsing ${wavName}:`, metadata);
-                
-                // Calculate sample length
-                let samlen = 0;
-                if (metadata.duration && metadata.sampleRate) {
-                    samlen = Math.floor(metadata.sampleRate * metadata.duration);
-                }
-                
-                // Extract loop points
-                let loopStart = 0;
-                let loopEnd = samlen;
-                let hasLoop = false;
-                
-                if (metadata.loopPoints) {
-                    loopStart = metadata.loopPoints.start || 0;
-                    loopEnd = metadata.loopPoints.end || samlen;
-                    hasLoop = true;
-                    console.log(`  Loop found: ${loopStart} - ${loopEnd}`);
-                }
-                
-                // Store metadata in asset (only on first parse)
+        try {
+            const result = await window.BitboxerFileHandler.FileImporter.import(file);
+            const wavData = result?.wavFiles?.[0];
+            if (wavData?.metadata) {
                 asset.wavMetadata = {
-                    sampleRate: metadata.sampleRate || 44100,
-                    numChannels: metadata.numChannels || 1,
-                    bitsPerSample: metadata.bitsPerSample || 16,
-                    duration: metadata.duration || 0,
-                    samlen: samlen,
-                    loopStart: loopStart,
-                    loopEnd: loopEnd,
-                    hasLoop: hasLoop,
-                    rootKey: parseInt(asset.params.rootnote) || 60
-                };
-                
-                // Update rootnote from WAV if available
-                if (metadata.rootNote !== undefined && metadata.rootNote >= 0 && metadata.rootNote <= 127) {
-                    asset.params.rootnote = metadata.rootNote.toString();
-                    asset.wavMetadata.rootKey = metadata.rootNote;
-                    console.log(`  Root note from WAV: ${metadata.rootNote}`);
-                }
-                
-                console.log(`âœ" Parsed: ${wavName} (${samlen} samples, Loop: ${hasLoop})`);
-            } catch (error) {
-                console.error(`âœ— Failed to parse WAV: ${wavName}`, error);
-                // Initialize with defaults only if parsing failed
-                asset.wavMetadata = {
-                    sampleRate: 44100,
-                    numChannels: 1,
-                    bitsPerSample: 16,
-                    duration: 0,
-                    samlen: 0,
-                    loopStart: 0,
-                    loopEnd: 0,
-                    hasLoop: false,
-                    rootKey: parseInt(asset.params.rootnote) || 60
+                    sampleRate: wavData.metadata.sampleRate || 44100,
+                    numChannels: wavData.metadata.channels || wavData.metadata.numChannels || 1,
+                    bitsPerSample: wavData.metadata.bitsPerSample || 16,
+                    duration: wavData.metadata.duration || 0,
+                    samlen: wavData.metadata.samlen || Math.floor((wavData.metadata.sampleRate || 44100) * (wavData.metadata.duration || 0)),
+                    loopStart: wavData.metadata.loopPoints?.start || 0,
+                    loopEnd: wavData.metadata.loopPoints?.end || 0,
+                    hasLoop: Boolean(wavData.metadata.loopPoints),
+                    rootKey: parseInt(asset.params.rootnote, 10) || 60
                 };
             }
-        } else {
-            console.warn(`âœ— WAV not in cache: ${wavName}`);
-            // Initialize with defaults only if not found
-            asset.wavMetadata = {
-                sampleRate: 44100,
-                numChannels: 1,
-                bitsPerSample: 16,
-                duration: 0,
-                samlen: 0,
-                loopStart: 0,
-                loopEnd: 0,
-                hasLoop: false,
-                rootKey: parseInt(asset.params.rootnote) || 60
-            };
+        } catch (error) {
+            console.warn('Failed to parse WAV metadata for asset:', wavName, error);
         }
     }
 }
