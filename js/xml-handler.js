@@ -454,6 +454,68 @@ function writeWAVMetadata(originalBuffer, metadata) {
 // ============================================
 // XML SAVING
 // ============================================
+function getMultisamplePadKey(row, col) {
+    return `${row},${col}`;
+}
+
+function sanitizeMultisampleExportSegment(name) {
+    const cleaned = (name || 'Multisample')
+        .replace(/\.[^.]+$/, '')
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    return cleaned || 'Multisample';
+}
+
+function getMultisampleFolderNameForPad(presetData, row, col) {
+    const pad = presetData?.pads?.[row]?.[col];
+    const rawPath = (pad?.filename || '').replace(/^\.?[\\\/]/, '');
+    const pathParts = rawPath ? rawPath.split(/[\\\/]/).filter(Boolean) : [];
+    const leaf = pathParts.length > 0 ? pathParts[pathParts.length - 1] : '';
+
+    if (leaf && !/\.[^.]+$/.test(leaf)) {
+        return leaf;
+    }
+
+    const relatedAsset = (window.BitboxerData.assetCells || []).find((asset) =>
+        parseInt(asset.params?.asssrcrow, 10) === row &&
+        parseInt(asset.params?.asssrccol, 10) === col
+    );
+    const assetStem = sanitizeMultisampleExportSegment((relatedAsset?.filename || '').split(/[/\\]/).pop() || '');
+    const padNumber = (row * 4 + col + 1).toString().padStart(2, '0');
+
+    return `Pad${padNumber}_${assetStem || 'Multisample'}`;
+}
+
+function buildMultisampleFolderMap(presetData) {
+    const folderMap = new Map();
+
+    for (let row = 0; row < 4; row++) {
+        for (let col = 0; col < 4; col++) {
+            const pad = presetData?.pads?.[row]?.[col];
+            if (pad?.params?.multisammode === '1') {
+                folderMap.set(getMultisamplePadKey(row, col), getMultisampleFolderNameForPad(presetData, row, col));
+            }
+        }
+    }
+
+    return folderMap;
+}
+
+function resolveMultisampleAssetExportFilename(asset, presetData) {
+    const row = parseInt(asset.params?.asssrcrow, 10);
+    const col = parseInt(asset.params?.asssrccol, 10);
+    const wavFileName = (asset.filename || '').split(/[/\\]/).pop();
+
+    if (Number.isNaN(row) || Number.isNaN(col) || !wavFileName) {
+        return asset.filename || '';
+    }
+
+    const folderName = getMultisampleFolderNameForPad(presetData, row, col);
+    return `.\\${folderName}\\${wavFileName}`;
+}
+
 /**
  * Saves the current preset as a ZIP file with proper folder structure
  */
@@ -480,25 +542,15 @@ async function savePreset() {
         console.log('ZIP Structure:');
         console.log(`  Root: ${projectName}/`);
 
-        // Collect all unique multisample folders
-        const multisamFolders = new Set();
-        for (let row = 0; row < 4; row++) {
-            for (let col = 0; col < 4; col++) {
-                const pad = presetData.pads[row][col];
-                if (pad.params.multisammode === '1' && pad.filename) {
-                    // Extract ONLY the immediate folder name, not full path
-                    // Input: ".\Presets\001-Ac Piano 1" or "\Presets\001-Ac Piano 1"
-                    // Output: "001-Ac Piano 1"
-                    let path = pad.filename.replace(/^\.?[\\\/]/, ''); // Remove leading .\ or \
-                    const parts = path.split(/[\\\/]/);
-                    const folderName = parts[parts.length - 1]; // Take last part only
+        const multisamFolderMap = buildMultisampleFolderMap(presetData);
+        const multisamFolders = new Set(multisamFolderMap.values());
 
-                    if (folderName) {
-                        multisamFolders.add(folderName);
-                    }
-                }
+        assetCells.forEach((asset) => {
+            const normalizedFilename = resolveMultisampleAssetExportFilename(asset, presetData);
+            if (normalizedFilename) {
+                asset.filename = normalizedFilename;
             }
-        }
+        });
         
 
         // Add regular (non-multisample) WAV files at root level
@@ -524,7 +576,7 @@ async function savePreset() {
         }
 
         // Add actual WAV files to multisample folders
-        for (const folder of multisamFolders) {
+        for (const [padKey, folder] of multisamFolderMap.entries()) {
             console.log(`  Adding WAV files to: ${projectName}/${folder}/`);
 
             // Find all asset cells for this folder
@@ -705,7 +757,7 @@ function generatePresetXML(data) {
         // Clean asset filename - remove parent paths, keep only immediate folder + filename
         // Input: ".\\Presets\001-Ac Piano 1\Jv880_000.wav"
         // Output: ".\\001-Ac Piano 1\Jv880_000.wav"
-        let filename = asset.filename;
+        let filename = resolveMultisampleAssetExportFilename(asset, data);
         
         if (filename) {
             // Remove leading prefix
@@ -775,13 +827,7 @@ function generatePadCellXML(row, col, pad) {
     // Clean up filename for multisamples
     let filename = pad.filename;
     if (filename && pad.params.multisammode === '1') {
-        // For multisamples, extract only the immediate folder name
-        // Input: ".\Presets\001-Ac Piano 1" or "\Presets\001-Ac Piano 1"
-        // Output: ".\001-Ac Piano 1"
-        let path = filename.replace(/^\.?[\\\/]/, ''); // Remove leading .\ or \
-        const parts = path.split(/[\\\/]/);
-        const folderName = parts[parts.length - 1]; // Take last part only
-        filename = `.\\${folderName}`;
+        filename = `.\\${getMultisampleFolderNameForPad(window.BitboxerData.presetData, row, col)}`;
     } else if (filename && !filename.startsWith('.\\') && !filename.startsWith('./')) {
         // For regular samples, just ensure .\ prefix
         filename = `.\\${filename}`;
