@@ -95,7 +95,7 @@ function createPadGrid() {
             }
             
             pad.innerHTML = `
-                <button class="pad-preview-trigger" type="button" title="Preview pad" aria-label="Preview pad" disabled>▶</button>
+                <button class="pad-preview-trigger is-unavailable" type="button" title="Preview pad" aria-label="Preview pad" aria-disabled="true">▶</button>
                 <svg class="pad-mode-icon" width="16" height="16" viewBox="0 0 16 16">
                     <rect class="cls-1" width="16" height="16" rx="2.98" ry="2.98" fill="#888888a7" />
                 </svg>
