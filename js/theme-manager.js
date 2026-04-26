@@ -188,6 +188,13 @@
         return themes[name] ?? themes['dark-spectral'];
     }
 
+    function getThemeSelectors() {
+        return [
+            document.getElementById('themeSelect'),
+            document.getElementById('startupThemeSelect')
+        ].filter(Boolean);
+    }
+
     function applyTheme(name) {
         const resolvedName = themes[name] ? name : 'dark-spectral';
         const theme = getThemeDefinition(resolvedName);
@@ -202,10 +209,9 @@
             // no-op
         }
 
-        const select = document.getElementById('themeSelect');
-        if (select) {
+        getThemeSelectors().forEach((select) => {
             select.value = resolvedName;
-        }
+        });
 
         window.dispatchEvent(new CustomEvent('bitboxer:themechange', {
             detail: { theme: resolvedName }
@@ -213,20 +219,21 @@
     }
 
     function initThemeSelector() {
-        const select = document.getElementById('themeSelect');
-        if (!select || select.dataset.initialized === 'true') {
-            return;
-        }
+        getThemeSelectors().forEach((select) => {
+            if (select.dataset.initialized === 'true') {
+                return;
+            }
 
-        select.innerHTML = getThemeNames()
-            .map((name) => `<option value="${name}">${themes[name].label}</option>`)
-            .join('');
+            select.innerHTML = getThemeNames()
+                .map((name) => `<option value="${name}">${themes[name].label}</option>`)
+                .join('');
 
-        select.addEventListener('change', () => {
-            applyTheme(select.value);
+            select.addEventListener('change', () => {
+                applyTheme(select.value);
+            });
+
+            select.dataset.initialized = 'true';
         });
-
-        select.dataset.initialized = 'true';
     }
 
     function init() {
@@ -247,6 +254,7 @@
         getThemeNames,
         getThemeDefinition,
         applyTheme,
+        initThemeSelector,
         init
     };
 
