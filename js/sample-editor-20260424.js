@@ -247,6 +247,7 @@ class AudioEngine {
         this.loopEnabled = false;
         this.isReversed = false;
         this.reversedBuffer = null;
+        this.playbackSessionId = 0;
     }
 
     async init() {
@@ -288,6 +289,7 @@ class AudioEngine {
         if (!this.audioBuffer) return;
         
         this.stop();
+        const sessionId = ++this.playbackSessionId;
 
         const {
             startSample = 0,
@@ -336,37 +338,42 @@ class AudioEngine {
             adjustedLoopEnd = bufferLength - loopStartSample;
         }
 
-        this.source = this.audioContext.createBufferSource();
-        this.source.buffer = bufferToPlay;
-        this.source.connect(this.audioContext.destination);
+        const source = this.audioContext.createBufferSource();
+        source.buffer = bufferToPlay;
+        source.connect(this.audioContext.destination);
+        this.source = source;
 
         const startTime = adjustedStart / sampleRate;
         const duration = (adjustedEnd - adjustedStart) / sampleRate;
 
         if (loopEnabled) {
-            this.source.loop = true;
-            this.source.loopStart = adjustedLoopStart / sampleRate;
-            this.source.loopEnd = adjustedLoopEnd / sampleRate;
+            source.loop = true;
+            source.loopStart = adjustedLoopStart / sampleRate;
+            source.loopEnd = adjustedLoopEnd / sampleRate;
         }
 
-        this.source.start(0, startTime, loopEnabled ? undefined : duration);
+        source.start(0, startTime, loopEnabled ? undefined : duration);
 
         this.isPlaying = true;
         this.startTime = this.audioContext.currentTime;
 
-        this.source.onended = () => {
-            this.isPlaying = false;
+        source.onended = () => {
+            if (this.source === source && this.playbackSessionId === sessionId) {
+                this.isPlaying = false;
+                this.source = null;
+            }
         };
     }
 
     stop() {
-        if (this.source) {
+        const sourceToStop = this.source;
+        this.source = null;
+        if (sourceToStop) {
             try {
-                this.source.stop();
+                sourceToStop.stop();
             } catch (e) {
                 // Already stopped
             }
-            this.source = null;
         }
         this.isPlaying = false;
     }
@@ -1488,12 +1495,28 @@ class SampleEditor {
         // Selection state
         this.selectionStart = null;  
         this.selectionEnd = null; 
+        this.clipboard = null;
+        this.history = [];
+        this.maxHistoryEntries = 20;
+        this.contextCursorSample = 0;
+        this.suppressModalCloseUntil = 0;
 
         // Prevent duplicate event listeners   
         this._eventListenersAttached = false;  
 
         // Render throttling
         this._renderScheduled = false;
+    }
+
+    suppressModalClose(durationMs = 250) {
+        this.suppressModalCloseUntil = Math.max(
+            this.suppressModalCloseUntil || 0,
+            performance.now() + durationMs
+        );
+    }
+
+    shouldSuppressModalClose() {
+        return performance.now() < (this.suppressModalCloseUntil || 0);
     }
 
     /**
@@ -1559,8 +1582,495 @@ class SampleEditor {
         this.markerController = new MarkerController(this.renderer, this.audioEngine);
         this.zoomController = new ZoomController(this.renderer);
 
+        if (!canvas.hasAttribute('tabindex')) {
+            canvas.tabIndex = 0;
+        }
+
         this.setupEventListeners(canvas);
         this.renderer.resize();
+    }
+
+    getSelectionRange({ requireLength = true } = {}) {
+        if (this.selectionStart === null || this.selectionEnd === null) {
+            return null;
+        }
+
+        if (isNaN(this.selectionStart) || isNaN(this.selectionEnd)) {
+            return null;
+        }
+
+        const start = Math.max(0, Math.min(this.selectionStart, this.selectionEnd));
+        const end = Math.max(0, Math.max(this.selectionStart, this.selectionEnd));
+
+        if (requireLength && end <= start) {
+            return null;
+        }
+
+        return {
+            start: Math.floor(start),
+            end: Math.floor(end)
+        };
+    }
+
+    getCurrentFileBinding() {
+        const isMultisampleEditor = this === window._multiSampleEditor;
+        if (isMultisampleEditor) {
+            const asset = window._multiEditorState?.currentAsset || null;
+            const fileName = asset?.filename ? asset.filename.split(/[/\\]/).pop() : null;
+            return { isMultisampleEditor, asset, pad: null, fileName };
+        }
+
+        const { currentEditingPad, presetData } = window.BitboxerData;
+        if (!currentEditingPad) {
+            return { isMultisampleEditor: false, asset: null, pad: null, fileName: null };
+        }
+
+        const row = parseInt(currentEditingPad.dataset.row, 10);
+        const col = parseInt(currentEditingPad.dataset.col, 10);
+        const pad = presetData?.pads?.[row]?.[col] || null;
+        const fileName = pad?.filename ? pad.filename.split(/[/\\]/).pop() : null;
+        return { isMultisampleEditor: false, asset: null, pad, fileName };
+    }
+
+    createBufferFromChannels(channelData, sampleRate) {
+        const channelCount = channelData.length;
+        const length = channelData[0]?.length || 0;
+        const buffer = this.audioEngine.audioContext.createBuffer(channelCount, length, sampleRate);
+
+        channelData.forEach((data, channel) => {
+            buffer.copyToChannel(data, channel);
+        });
+
+        return buffer;
+    }
+
+    encodeWavBuffer(audioBuffer) {
+        const numChannels = audioBuffer.numberOfChannels;
+        const sampleRate = audioBuffer.sampleRate;
+        const format = 1;
+        const bitDepth = 16;
+        const bytesPerSample = bitDepth / 8;
+        const blockAlign = numChannels * bytesPerSample;
+        const byteRate = sampleRate * blockAlign;
+        const dataLength = audioBuffer.length * blockAlign;
+        const buffer = new ArrayBuffer(44 + dataLength);
+        const view = new DataView(buffer);
+
+        const writeString = (offset, text) => {
+            for (let i = 0; i < text.length; i++) {
+                view.setUint8(offset + i, text.charCodeAt(i));
+            }
+        };
+
+        writeString(0, 'RIFF');
+        view.setUint32(4, 36 + dataLength, true);
+        writeString(8, 'WAVE');
+        writeString(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, format, true);
+        view.setUint16(22, numChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, byteRate, true);
+        view.setUint16(32, blockAlign, true);
+        view.setUint16(34, bitDepth, true);
+        writeString(36, 'data');
+        view.setUint32(40, dataLength, true);
+
+        const channels = [];
+        for (let channel = 0; channel < numChannels; channel++) {
+            channels.push(audioBuffer.getChannelData(channel));
+        }
+
+        let offset = 44;
+        for (let sample = 0; sample < audioBuffer.length; sample++) {
+            for (let channel = 0; channel < numChannels; channel++) {
+                const value = Math.max(-1, Math.min(1, channels[channel][sample]));
+                const pcm = value < 0 ? value * 0x8000 : value * 0x7fff;
+                view.setInt16(offset, Math.round(pcm), true);
+                offset += 2;
+            }
+        }
+
+        return buffer;
+    }
+
+    buildClipboardFromRange(start, end) {
+        const source = this.audioEngine.audioBuffer;
+        const channelData = [];
+
+        for (let channel = 0; channel < source.numberOfChannels; channel++) {
+            channelData.push(source.getChannelData(channel).slice(start, end));
+        }
+
+        return {
+            sampleRate: source.sampleRate,
+            numberOfChannels: source.numberOfChannels,
+            length: Math.max(0, end - start),
+            channelData
+        };
+    }
+
+    captureEditorSnapshot() {
+        if (!this.audioEngine.audioBuffer) {
+            return null;
+        }
+
+        const buffer = this.audioEngine.audioBuffer;
+        const channelData = [];
+        for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+            channelData.push(buffer.getChannelData(channel).slice());
+        }
+
+        return {
+            sampleRate: buffer.sampleRate,
+            channelData,
+            selectionStart: this.selectionStart,
+            selectionEnd: this.selectionEnd,
+            markers: this.markerController ? {
+                start: this.markerController.markers.start.sample,
+                end: this.markerController.markers.end.sample,
+                loopStart: this.markerController.markers.loopStart.sample,
+                loopEnd: this.markerController.markers.loopEnd.sample
+            } : null,
+            sliceMarkers: this.markerController ? [...this.markerController.sliceMarkers] : []
+        };
+    }
+
+    pushUndoState() {
+        const snapshot = this.captureEditorSnapshot();
+        if (!snapshot) {
+            return;
+        }
+
+        this.history.push(snapshot);
+        if (this.history.length > this.maxHistoryEntries) {
+            this.history.shift();
+        }
+    }
+
+    restoreSnapshot(snapshot) {
+        if (!snapshot) {
+            return false;
+        }
+
+        const newBuffer = this.createBufferFromChannels(snapshot.channelData, snapshot.sampleRate);
+        this.audioEngine.audioBuffer = newBuffer;
+        this.audioEngine.reversedBuffer = null;
+        this.renderer.setWaveformData(newBuffer);
+
+        if (this.markerController && snapshot.markers) {
+            this.markerController.setMarker('start', snapshot.markers.start);
+            this.markerController.setMarker('end', snapshot.markers.end);
+            this.markerController.setMarker('loopStart', snapshot.markers.loopStart);
+            this.markerController.setMarker('loopEnd', snapshot.markers.loopEnd);
+            this.markerController.sliceMarkers = [...snapshot.sliceMarkers];
+            this.markerController.updateSlicesToPad();
+        }
+
+        this.selectionStart = snapshot.selectionStart;
+        this.selectionEnd = snapshot.selectionEnd;
+        this.syncSourceMetadataAfterEdit();
+        this.persistEditedFileToCache();
+        this.render();
+        return true;
+    }
+
+    undoLastEdit() {
+        if (!this.history.length) {
+            window.BitboxerUtils.setStatus('Nothing to undo', 'info');
+            return false;
+        }
+
+        const snapshot = this.history.pop();
+        const restored = this.restoreSnapshot(snapshot);
+        if (restored) {
+            window.BitboxerUtils.setStatus('Undo applied', 'success');
+        }
+        return restored;
+    }
+
+    remapSampleThroughReplace(sample, replaceStart, replaceEnd, insertLength) {
+        const removedLength = replaceEnd - replaceStart;
+        const delta = insertLength - removedLength;
+
+        if (sample <= replaceStart) {
+            return sample;
+        }
+
+        if (sample >= replaceEnd) {
+            return sample + delta;
+        }
+
+        return replaceStart + Math.max(0, insertLength);
+    }
+
+    remapEditorStateAfterReplace(replaceStart, replaceEnd, insertLength) {
+        const totalLength = this.audioEngine.audioBuffer.length;
+        const clamp = (value) => Math.max(0, Math.min(totalLength, Math.floor(value)));
+        const remap = (value) => clamp(this.remapSampleThroughReplace(value, replaceStart, replaceEnd, insertLength));
+
+        if (this.markerController) {
+            Object.values(this.markerController.markers).forEach((marker) => {
+                marker.sample = remap(marker.sample);
+            });
+
+            this.markerController.sliceMarkers = this.markerController.sliceMarkers
+                .map((sample) => remap(sample))
+                .filter((sample, index, array) => sample >= 0 && sample <= totalLength && array.indexOf(sample) === index)
+                .sort((a, b) => a - b);
+
+            if (this.currentMode === '2' && !this.markerController.sliceMarkers.includes(0)) {
+                this.markerController.sliceMarkers.unshift(0);
+            }
+        }
+    }
+
+    syncSourceMetadataAfterEdit() {
+        const binding = this.getCurrentFileBinding();
+        const bufferLength = this.audioEngine.audioBuffer.length;
+
+        if (binding.isMultisampleEditor && binding.asset) {
+            binding.asset.wavMetadata = binding.asset.wavMetadata || {};
+            binding.asset.wavMetadata.samlen = bufferLength;
+            binding.asset.wavMetadata.loopStart = this.markerController.markers.loopStart.sample;
+            binding.asset.wavMetadata.loopEnd = this.markerController.markers.loopEnd.sample;
+            binding.asset.wavMetadata.hasLoop = document.getElementById('multiLoopEnabled')?.value === '1';
+
+            const startSlider = document.getElementById('multiLoopStart');
+            const endSlider = document.getElementById('multiLoopEnd');
+            const startValue = document.getElementById('multiLoopStart-val');
+            const endValue = document.getElementById('multiLoopEnd-val');
+            if (startSlider) {
+                startSlider.max = bufferLength;
+                startSlider.value = binding.asset.wavMetadata.loopStart;
+            }
+            if (endSlider) {
+                endSlider.max = bufferLength;
+                endSlider.value = binding.asset.wavMetadata.loopEnd;
+            }
+            if (startValue) startValue.textContent = binding.asset.wavMetadata.loopStart;
+            if (endValue) endValue.textContent = binding.asset.wavMetadata.loopEnd;
+
+            window._multiEditorState?.setAudioData(
+                this.audioEngine.audioBuffer,
+                binding.asset.wavMetadata.loopStart,
+                binding.asset.wavMetadata.loopEnd,
+                binding.asset.wavMetadata.hasLoop
+            );
+            return;
+        }
+
+        if (binding.pad) {
+            this.markerController.updatePadParams();
+            window.BitboxerPadEditor?.updateSliderMaxValues?.(binding.pad);
+        }
+    }
+
+    persistEditedFileToCache() {
+        const binding = this.getCurrentFileBinding();
+        if (!binding.fileName) {
+            return;
+        }
+
+        if (!window._lastImportedFiles) {
+            window._lastImportedFiles = new Map();
+        }
+
+        const wavBuffer = this.encodeWavBuffer(this.audioEngine.audioBuffer);
+        const editedFile = new File([wavBuffer], binding.fileName, { type: 'audio/wav' });
+        window._lastImportedFiles.set(binding.fileName, editedFile);
+    }
+
+    commitEditedBuffer(newBuffer, { selectionStart = null, selectionEnd = null } = {}) {
+        this.audioEngine.audioBuffer = newBuffer;
+        this.audioEngine.reversedBuffer = null;
+        this.renderer.setWaveformData(newBuffer);
+
+        this.selectionStart = selectionStart;
+        this.selectionEnd = selectionEnd;
+
+        this.remapEditorStateAfterReplace(
+            selectionStart ?? 0,
+            selectionStart ?? 0,
+            0
+        );
+        this.syncSourceMetadataAfterEdit();
+        this.persistEditedFileToCache();
+        this.render();
+    }
+
+    replaceRangeWithClipboard(replaceStart, replaceEnd, clipboardData) {
+        const source = this.audioEngine.audioBuffer;
+        if (!source || !clipboardData || clipboardData.length < 0) {
+            return false;
+        }
+
+        const insertLength = clipboardData.length;
+        const newLength = source.length - (replaceEnd - replaceStart) + insertLength;
+        const channelData = [];
+
+        for (let channel = 0; channel < source.numberOfChannels; channel++) {
+            const currentChannel = source.getChannelData(channel);
+            const before = currentChannel.slice(0, replaceStart);
+            const after = currentChannel.slice(replaceEnd);
+            const insert = clipboardData.channelData[Math.min(channel, clipboardData.channelData.length - 1)];
+
+            const merged = new Float32Array(newLength);
+            merged.set(before, 0);
+            merged.set(insert, before.length);
+            merged.set(after, before.length + insert.length);
+            channelData.push(merged);
+        }
+
+        const newBuffer = this.createBufferFromChannels(channelData, source.sampleRate);
+        this.audioEngine.audioBuffer = newBuffer;
+        this.audioEngine.reversedBuffer = null;
+        this.renderer.setWaveformData(newBuffer);
+        this.remapEditorStateAfterReplace(replaceStart, replaceEnd, insertLength);
+        this.selectionStart = replaceStart;
+        this.selectionEnd = replaceStart + insertLength;
+        this.syncSourceMetadataAfterEdit();
+        this.persistEditedFileToCache();
+        this.render();
+        return true;
+    }
+
+    copySelection() {
+        const range = this.getSelectionRange();
+        if (!range || !this.audioEngine.audioBuffer) {
+            window.BitboxerUtils.setStatus('No valid selection to copy', 'error');
+            return false;
+        }
+
+        this.clipboard = this.buildClipboardFromRange(range.start, range.end);
+        window.BitboxerUtils.setStatus(`Copied ${this.clipboard.length} samples`, 'success');
+        return true;
+    }
+
+    cutSelection() {
+        const range = this.getSelectionRange();
+        if (!range || !this.audioEngine.audioBuffer) {
+            window.BitboxerUtils.setStatus('No valid selection to cut', 'error');
+            return false;
+        }
+
+        this.pushUndoState();
+        this.clipboard = this.buildClipboardFromRange(range.start, range.end);
+        const emptyClipboard = {
+            sampleRate: this.audioEngine.audioBuffer.sampleRate,
+            numberOfChannels: this.audioEngine.audioBuffer.numberOfChannels,
+            length: 0,
+            channelData: Array.from({ length: this.audioEngine.audioBuffer.numberOfChannels }, () => new Float32Array(0))
+        };
+
+        const success = this.replaceRangeWithClipboard(range.start, range.end, emptyClipboard);
+        if (success) {
+            this.selectionStart = range.start;
+            this.selectionEnd = range.start;
+            window.BitboxerUtils.setStatus(`Cut ${range.end - range.start} samples`, 'success');
+        }
+        return success;
+    }
+
+    cropToSelection() {
+        const range = this.getSelectionRange();
+        if (!range || !this.audioEngine.audioBuffer) {
+            window.BitboxerUtils.setStatus('No valid selection to crop', 'error');
+            return false;
+        }
+
+        this.pushUndoState();
+        const source = this.audioEngine.audioBuffer;
+        const channelData = [];
+
+        for (let channel = 0; channel < source.numberOfChannels; channel++) {
+            channelData.push(source.getChannelData(channel).slice(range.start, range.end));
+        }
+
+        const newBuffer = this.createBufferFromChannels(channelData, source.sampleRate);
+        this.audioEngine.audioBuffer = newBuffer;
+        this.audioEngine.reversedBuffer = null;
+        this.renderer.setWaveformData(newBuffer);
+
+        if (this.markerController) {
+            const shiftSample = (sample) => Math.max(0, sample - range.start);
+            Object.values(this.markerController.markers).forEach((marker) => {
+                marker.sample = Math.max(0, Math.min(newBuffer.length, shiftSample(marker.sample)));
+            });
+
+            this.markerController.sliceMarkers = this.markerController.sliceMarkers
+                .filter((sample) => sample >= range.start && sample <= range.end)
+                .map((sample) => shiftSample(sample))
+                .filter((sample, index, array) => array.indexOf(sample) === index)
+                .sort((a, b) => a - b);
+
+            if (this.currentMode === '2' && !this.markerController.sliceMarkers.includes(0)) {
+                this.markerController.sliceMarkers.unshift(0);
+            }
+
+            this.markerController.updateSlicesToPad();
+        }
+
+        this.selectionStart = 0;
+        this.selectionEnd = newBuffer.length;
+        this.syncSourceMetadataAfterEdit();
+        this.persistEditedFileToCache();
+        this.render();
+        window.BitboxerUtils.setStatus(`Cropped to ${newBuffer.length} samples`, 'success');
+        return true;
+    }
+
+    duplicateSelection() {
+        const range = this.getSelectionRange();
+        if (!range || !this.audioEngine.audioBuffer) {
+            window.BitboxerUtils.setStatus('No valid selection to duplicate', 'error');
+            return false;
+        }
+
+        this.pushUndoState();
+        const duplicated = this.buildClipboardFromRange(range.start, range.end);
+        const success = this.replaceRangeWithClipboard(range.end, range.end, duplicated);
+        if (success) {
+            // Keep the original selection stable so repeated duplicate commands
+            // keep cloning the same region with the same duration.
+            this.selectionStart = range.start;
+            this.selectionEnd = range.end;
+            this.render();
+            window.BitboxerUtils.setStatus(`Duplicated ${duplicated.length} samples`, 'success');
+        }
+        return success;
+    }
+
+    pasteClipboard() {
+        if (!this.clipboard || !this.audioEngine.audioBuffer) {
+            window.BitboxerUtils.setStatus('Clipboard is empty', 'error');
+            return false;
+        }
+
+        this.pushUndoState();
+        const range = this.getSelectionRange({ requireLength: false });
+        const insertAt = range ? range.start : 0;
+        const replaceEnd = range ? range.end : insertAt;
+        const success = this.replaceRangeWithClipboard(insertAt, replaceEnd, this.clipboard);
+        if (success) {
+            window.BitboxerUtils.setStatus(`Pasted ${this.clipboard.length} samples`, 'success');
+        }
+        return success;
+    }
+
+    pasteClipboardAt(sample) {
+        if (!this.clipboard || !this.audioEngine.audioBuffer) {
+            window.BitboxerUtils.setStatus('Clipboard is empty', 'error');
+            return false;
+        }
+
+        const insertAt = Math.max(0, Math.min(this.audioEngine.audioBuffer.length, Math.floor(sample)));
+        this.pushUndoState();
+        const success = this.replaceRangeWithClipboard(insertAt, insertAt, this.clipboard);
+        if (success) {
+            window.BitboxerUtils.setStatus(`Pasted ${this.clipboard.length} samples at cursor`, 'success');
+        }
+        return success;
     }
 
     scheduleRender() {
@@ -1589,10 +2099,68 @@ class SampleEditor {
         let isSelecting = false;
         let lastMouseX = null;
         let lastMouseY = null;
+        const stopCanvasPropagation = (e) => {
+            e.stopPropagation();
+        };
+        const finishPointerInteraction = () => {
+            let endedInteraction = false;
+            if (isDragging) {
+                endedInteraction = true;
+                if (this.draggingSelectionMarker) {
+                    if (this.selectionStart > this.selectionEnd) {
+                        [this.selectionStart, this.selectionEnd] = [this.selectionEnd, this.selectionStart];
+                    }
+
+                    if (this.markerController.snapToZeroCrossingEnabled && this.renderer.waveformData) {
+                        const channelData = this.renderer.waveformData.channelData[0];
+                        this.selectionStart = this.markerController.findZeroCrossing(this.selectionStart, channelData);
+                        this.selectionEnd = this.markerController.findZeroCrossing(this.selectionEnd, channelData);
+                    }
+
+                    console.log(`Selection marker dragged: ${this.selectionStart} to ${this.selectionEnd}`);
+                    this.draggingSelectionMarker = null;
+                } else {
+                    this.markerController.handleMouseUp();
+                }
+                isDragging = false;
+                this.render();
+                console.log('Stopped dragging');
+                this.suppressModalClose();
+                return;
+            }
+
+            if (isSelecting) {
+                endedInteraction = true;
+                isSelecting = false;
+
+                if (this.selectionStart > this.selectionEnd) {
+                    [this.selectionStart, this.selectionEnd] = [this.selectionEnd, this.selectionStart];
+                }
+
+                if (this.markerController.snapToZeroCrossingEnabled && this.renderer.waveformData) {
+                    const channelData = this.renderer.waveformData.channelData[0];
+                    this.selectionStart = this.markerController.findZeroCrossing(this.selectionStart, channelData);
+                    this.selectionEnd = this.markerController.findZeroCrossing(this.selectionEnd, channelData);
+                }
+
+                console.log(`Selection finalized: ${this.selectionStart} to ${this.selectionEnd}`);
+                this.render();
+            }
+
+            if (endedInteraction) {
+                this.suppressModalClose();
+            }
+        };
+
+        ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel'].forEach((eventName) => {
+            canvas.addEventListener(eventName, stopCanvasPropagation);
+        });
 
         // ==================== MOUSEDOWN ====================
         canvas.addEventListener('mousedown', (e) => {
             e.preventDefault();
+            canvas.focus();
+            this.suppressModalClose();
 
             // Reset mouse tracking
             lastMouseX = null;
@@ -1778,46 +2346,15 @@ class SampleEditor {
 
         // ==================== MOUSEUP ====================
         canvas.addEventListener('mouseup', (e) => {
-            if (isDragging) {
-                if (this.draggingSelectionMarker) {
-                    // Ensure selection is in correct order
-                    if (this.selectionStart > this.selectionEnd) {
-                        [this.selectionStart, this.selectionEnd] = [this.selectionEnd, this.selectionStart];
-                    }
+            finishPointerInteraction();
+        });
 
-                    // Apply snap to zero-crossing if enabled
-                    if (this.markerController.snapToZeroCrossingEnabled && this.renderer.waveformData) {
-                        const channelData = this.renderer.waveformData.channelData[0];
-                        this.selectionStart = this.markerController.findZeroCrossing(this.selectionStart, channelData);
-                        this.selectionEnd = this.markerController.findZeroCrossing(this.selectionEnd, channelData);
-                    }
+        window.addEventListener('mouseup', () => {
+            finishPointerInteraction();
+        });
 
-                    console.log(`Selection marker dragged: ${this.selectionStart} to ${this.selectionEnd}`);
-                    this.draggingSelectionMarker = null;
-                } else {
-                    this.markerController.handleMouseUp();
-                }
-                isDragging = false;
-                this.render();
-                console.log('Stopped dragging');
-            } else if (isSelecting) {
-                isSelecting = false;
-
-                // Ensure selection is in correct order
-                if (this.selectionStart > this.selectionEnd) {
-                    [this.selectionStart, this.selectionEnd] = [this.selectionEnd, this.selectionStart];
-                }
-
-                // Apply snap to zero-crossing if enabled
-                if (this.markerController.snapToZeroCrossingEnabled && this.renderer.waveformData) {
-                    const channelData = this.renderer.waveformData.channelData[0];
-                    this.selectionStart = this.markerController.findZeroCrossing(this.selectionStart, channelData);
-                    this.selectionEnd = this.markerController.findZeroCrossing(this.selectionEnd, channelData);
-                }
-
-                console.log(`Selection finalized: ${this.selectionStart} to ${this.selectionEnd}`);
-                this.render();
-            }
+        window.addEventListener('blur', () => {
+            finishPointerInteraction();
         });
 
         // ==================== RIGHT-CLICK (CONTEXTMENU) ====================
@@ -1827,6 +2364,8 @@ class SampleEditor {
             const rect = canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top;
+            const clickSample = this.renderer.xToSample(x);
+            this.contextCursorSample = clickSample;
         
             // Get current mode
             const { currentEditingPad, presetData } = window.BitboxerData;
@@ -1839,8 +2378,6 @@ class SampleEditor {
         
             // SLICER MODE: Handle slice marker deletion/addition
             if (currentMode === '2') {
-                const clickSample = this.renderer.xToSample(x);
-            
                 // Check if clicking on existing marker (delete it)
                 const threshold = 10;
                 for (let i = 0; i < this.markerController.sliceMarkers.length; i++) {
@@ -1860,11 +2397,12 @@ class SampleEditor {
                     this.showSliceContextMenu(e.pageX, e.pageY);
                     return;
                 }
+
+                this.showWaveformContextMenu(e.pageX, e.pageY, { hasSelection: false });
+                return;
             } 
             // NORMAL MODES (Sample/Granular): Show selection context menu
             else if (currentMode === '0' || currentMode === '3') {
-                const clickSample = this.renderer.xToSample(x);
-
                 // Check if we have a valid selection
                 if (this.selectionStart !== null && this.selectionEnd !== null &&
                     !isNaN(this.selectionStart) && !isNaN(this.selectionEnd)) {
@@ -1880,6 +2418,10 @@ class SampleEditor {
                     }
                 }
             }
+
+            this.showWaveformContextMenu(e.pageX, e.pageY, {
+                hasSelection: !!this.getSelectionRange()
+            });
         });
 
         // ==================== MOUSE WHEEL (ZOOM) ====================
@@ -1892,18 +2434,53 @@ class SampleEditor {
             const rect = canvas.getBoundingClientRect();
             const x = e.clientX - rect.left;
 
-            // If there's a selection, zoom toward selection center
-            let zoomPoint = x;
-            if (this.selectionStart !== null && this.selectionEnd !== null && 
-                !isNaN(this.selectionStart) && !isNaN(this.selectionEnd)) {
-                const selectionCenter = (this.selectionStart + this.selectionEnd) / 2;
-                zoomPoint = this.renderer.sampleToX(selectionCenter);
-            }
-
-            this.zoomController.handleWheel(e.deltaY, zoomPoint, {
+            // Keep selection anchored in absolute sample coordinates and zoom toward
+            // the actual pointer position. Re-centering on selection makes the
+            // viewport jump, which looks like the selection itself is moving.
+            this.zoomController.handleWheel(e.deltaY, x, {
                 deltaMode: e.deltaMode,
                 shiftKey: e.shiftKey
             });
+        });
+
+        canvas.addEventListener('keydown', (e) => {
+            const accel = e.ctrlKey || e.metaKey;
+            const key = e.key.toLowerCase();
+
+            if (e.code === 'Space' || key === ' ') {
+                e.preventDefault();
+                if (this === window._multiSampleEditor && this.audioEngine.audioBuffer) {
+                    this.stop();
+                    this.audioEngine.play({
+                        startSample: 0,
+                        endSample: this.audioEngine.audioBuffer.length,
+                        loopEnabled: false,
+                        reverse: false
+                    });
+                    this.startPlaybackAnimation();
+                } else {
+                    this.play();
+                }
+                return;
+            }
+
+            if (!accel) {
+                return;
+            }
+
+            if (key === 'c') {
+                e.preventDefault();
+                this.copySelection();
+            } else if (key === 'x') {
+                e.preventDefault();
+                this.cutSelection();
+            } else if (key === 'v') {
+                e.preventDefault();
+                this.pasteClipboard();
+            } else if (key === 'z') {
+                e.preventDefault();
+                this.undoLastEdit();
+            }
         });
 
         // ==================== WINDOW RESIZE ====================
@@ -1967,6 +2544,72 @@ class SampleEditor {
         setTimeout(() => document.addEventListener('click', closeMenu), 0);
     }
 
+    showWaveformContextMenu(pageX, pageY, { hasSelection = false } = {}) {
+        const existing = document.getElementById('waveformContextMenu');
+        if (existing) existing.remove();
+
+        const menu = document.createElement('div');
+        menu.id = 'waveformContextMenu';
+        menu.className = 'context-menu show';
+        menu.style.position = 'fixed';
+        menu.style.left = pageX + 'px';
+        menu.style.top = pageY + 'px';
+        menu.style.zIndex = '2001';
+
+        menu.innerHTML = `
+            <div class="context-item" data-action="paste-at-cursor">Paste at cursor</div>
+            <div class="context-item" data-action="play-from-start">Play from start</div>
+            <div class="context-item" data-action="undo-edit">Undo last edit</div>
+            ${hasSelection ? '<div class="context-item separator"></div><div class="context-item" data-action="copy-selection">Copy selection</div><div class="context-item" data-action="cut-selection">Cut selection</div>' : ''}
+            <div class="context-item separator"></div>
+            <div class="context-item" data-action="cancel">Cancel</div>
+        `;
+
+        document.body.appendChild(menu);
+
+        menu.addEventListener('click', (e) => {
+            const action = e.target.dataset.action;
+
+            if (action === 'paste-at-cursor') {
+                this.pasteClipboardAt(this.contextCursorSample);
+            } else if (action === 'play-from-start') {
+                if (this === window._multiSampleEditor && this.audioEngine.audioBuffer) {
+                    this.stop();
+                    this.audioEngine.play({
+                        startSample: 0,
+                        endSample: this.audioEngine.audioBuffer.length,
+                        loopEnabled: false,
+                        reverse: false
+                    });
+                    this.startPlaybackAnimation();
+                } else {
+                    this.play();
+                }
+            } else if (action === 'undo-edit') {
+                this.undoLastEdit();
+            } else if (action === 'copy-selection') {
+                this.copySelection();
+            } else if (action === 'cut-selection') {
+                this.cutSelection();
+            }
+
+            menu.remove();
+
+            if (action !== 'cancel') {
+                this.render();
+            }
+        });
+
+        const closeMenu = (e) => {
+            if (!menu.contains(e.target)) {
+                menu.remove();
+                document.removeEventListener('click', closeMenu);
+            }
+        };
+
+        setTimeout(() => document.addEventListener('click', closeMenu), 0);
+    }
+
     /**
      * Shows context menu for setting markers from selection
      * @param {number} pageX - Mouse X position in page coordinates
@@ -2007,6 +2650,16 @@ class SampleEditor {
 
         let menuItems = '';
 
+        menuItems += `
+            <div class="context-item" data-action="copy-selection">Copy selection</div>
+            <div class="context-item" data-action="cut-selection">Cut selection</div>
+            <div class="context-item" data-action="paste-selection">Paste at selection</div>
+            <div class="context-item" data-action="duplicate-selection">Duplicate selection</div>
+            <div class="context-item" data-action="crop-selection">Crop to selection</div>
+            <div class="context-item" data-action="undo-edit">Undo last edit</div>
+            <div class="context-item separator"></div>
+        `;
+
         if (!isMultisampleMode) {
             // Normal mode: show sample start/end options
             menuItems += `
@@ -2034,7 +2687,19 @@ class SampleEditor {
         menu.addEventListener('click', (e) => {
             const action = e.target.dataset.action;
 
-            if (action === 'sample-start') {
+            if (action === 'copy-selection') {
+                this.copySelection();
+            } else if (action === 'cut-selection') {
+                this.cutSelection();
+            } else if (action === 'paste-selection') {
+                this.pasteClipboard();
+            } else if (action === 'duplicate-selection') {
+                this.duplicateSelection();
+            } else if (action === 'crop-selection') {
+                this.cropToSelection();
+            } else if (action === 'undo-edit') {
+                this.undoLastEdit();
+            } else if (action === 'sample-start') {
                 this.markerController.setMarker('start', snappedStart);
                 this.markerController.updatePadParams();
             } else if (action === 'sample-end') {
@@ -2062,8 +2727,10 @@ class SampleEditor {
             // Re-render if markers were changed
             if (action !== 'cancel') {
                 this.render();
-                const snapStatus = this.markerController.snapToZeroCrossingEnabled ? ' (snapped)' : '';
-                window.BitboxerUtils.setStatus(`Markers updated from selection${snapStatus}`, 'success');
+                if (!['copy-selection', 'cut-selection', 'paste-selection', 'duplicate-selection', 'crop-selection', 'undo-edit'].includes(action)) {
+                    const snapStatus = this.markerController.snapToZeroCrossingEnabled ? ' (snapped)' : '';
+                    window.BitboxerUtils.setStatus(`Markers updated from selection${snapStatus}`, 'success');
+                }
             }
         });
 
