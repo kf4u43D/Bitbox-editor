@@ -1,4 +1,4 @@
-/**
+/*
  * BITBOXER - Preset Editor Styles
  * Organized stylesheet for the Bitbox Micro/mk2 editor
  */
@@ -6,19 +6,6 @@
 /* ============================================
    CSS VARIABLES & THEME COLORS
    ============================================ */
-/* :root { */
-    /* Color Palette */
-    /* --color-bg-primary: #1a1a1a; */
-    /* --color-bg-secondary: #2a2a2a; */
-    /* --color-bg-tertiary: #333; */
-    /* --color-border: #404040; */
-    /* --color-text-primary: #e0e0e0; */
-    /* --color-text-secondary: #888; */
-    /* --color-accent-blue: #4a9eff; */
-    /* --color-accent-green: #5eff5e; */
-    /* --color-accent-yellow: #ffea5e; */
-    /* --color-accent-red: #ff5e5e; */
-    
 :root {
     /* Color Palette - Warm Theme */
     --color-bg-primary: #1a1614;
@@ -27,10 +14,10 @@
     --color-border: #4a4038;
     --color-text-primary: #e8ddd0;
     --color-text-secondary: #d0c2b9;
-    --color-accent-blue: #a35a2d;      /* Warm orange (replaces blue) */
-    --color-accent-green: #a35a2d;     /* Softer green */
-    --color-accent-yellow: #ffb347;    /* Peachy orange */
-    --color-accent-red: #ff0000;       /* Softer red */
+    --color-accent-blue: #a35a2d;
+    --color-accent-green: #a35a2d;
+    --color-accent-yellow: #ffb347;
+    --color-accent-red: #ff0000;
     --color-accent-bright-orange:  #ffa600;
     --color-accent-orange: #ffa600;
     --page-gradient-start: #1a1612;
@@ -107,12 +94,6 @@ body {
     padding: var(--spacing-lg);
     color: var(--color-text-primary);
 }
-
-/* @keyframes gradientShift {
-    0% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
-} */
 
 /* ============================================
    LAYOUT - CONTAINER & GRID
@@ -230,22 +211,18 @@ h1 {
     background: var(--color-bg-primary);
     border-radius: var(--radius-lg);
     padding: var(--spacing-lg);
-
 }
-
-
 
 .pad-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: var(--spacing-md);
     margin-bottom: var(--spacing-lg);
-    max-width: 500px; /* ← ADD THIS */
-    margin-left: auto;  /* ← ADD THIS (centers grid) */
-    margin-right: auto; /* ← ADD THIS */
+    max-width: 500px;
+    margin-left: auto;
+    margin-right: auto;
 }
 
-/* Individual Pad Styling */
 .pad {
     aspect-ratio: 1;
     min-width: 0;      
@@ -268,7 +245,6 @@ h1 {
     background: var(--color-bg-tertiary);
 }
 
-/* Pad States */
 .pad.selected {
     background: var(--pad-selected-bg);
     border-color: var(--color-accent-blue);
@@ -305,17 +281,12 @@ h1 {
     opacity: 0.5;
 }
 
-/* Pad Content */
 .pad-number {
     font-size: 1.2em;
     font-weight: 600;
     color: var(--color-accent-blue);
     margin-bottom: var(--spacing-xs);
     pointer-events: none;
-}
-
-.pad.active .pad-number {
-    /* color: var(--color-accent-green); */
 }
 
 .pad-label {
@@ -328,10 +299,6 @@ h1 {
     max-width: 90%;
     pointer-events: none;
     word-break: break-all;
-}
-
-.pad.active .pad-label {
-    /* color: var(--color-accent-green); */
 }
 
 .pad-preview-trigger {
@@ -352,7 +319,7 @@ h1 {
     z-index: 1;
 }
 
-.pad-preview-trigger:hover:not(:disabled) {
+.pad-preview-trigger:hover:not(.is-unavailable) {
     border-color: var(--color-accent-bright-orange);
     background: var(--preview-fill);
 }
@@ -362,9 +329,26 @@ h1 {
     background: color-mix(in srgb, var(--preview-fill) 100%, var(--preview-ring) 18%);
 }
 
-.pad-preview-trigger:disabled {
+.pad-preview-trigger.is-unavailable {
     opacity: 0.35;
-    cursor: not-allowed;
+    cursor: default;
+    border-color: color-mix(in srgb, var(--color-border) 92%, transparent);
+    background: rgba(0, 0, 0, 0.14);
+}
+
+.btn-grid-apply {
+    min-width: 132px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    border-color: var(--color-accent-bright-orange);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent-bright-orange) 28%, transparent),
+        0 10px 24px color-mix(in srgb, var(--color-accent-bright-orange) 18%, transparent);
+}
+
+.btn-grid-apply:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent-bright-orange) 34%, transparent),
+        0 14px 28px color-mix(in srgb, var(--color-accent-bright-orange) 24%, transparent);
 }
 
 .pad.empty {
@@ -435,17 +419,14 @@ h1 {
 }
 
 .btn-primary {
-    /* background: var(--color-accent-blue); */
     border-color: var(--color-accent-blue);
-    /* color: white; */
 }
 
 .btn-primary:hover:not(:disabled) {
-     background: var(--color-bg-tertiary);
+    background: var(--color-bg-tertiary);
     border-color: var(--color-accent-bright-orange);
 }
 
-/* Blinking animation for working folder button */
 @keyframes blink-red {
     0%, 100% { 
         background-color: var(--color-accent-red);
@@ -480,10 +461,9 @@ h1 {
 
 .btn-container-dual button {
     width: 100%;
-    box-sizing: border-box; /* ensures padding/border doesn't increase width */
+    box-sizing: border-box;
     display: block;
 }
-
 
 /* ============================================
    STATUS BAR
@@ -1059,7 +1039,6 @@ h1 {
    MODAL TABS
    ============================================ */
 .modal-tabs {
-    /* display: flex; */
     gap: 5px;
     margin-bottom: var(--spacing-lg);
     border-bottom: 2px solid var(--color-border);
@@ -1143,9 +1122,6 @@ h1 {
 }
 
 .dropdown-container-dual {
-    /* display: flex; */
-    /* gap: 10px; */
-    /* justify-content: space-between; */
     display: grid;
     grid-template-columns: repeat(2, 1fr);
     gap: var(--spacing-md);
@@ -1227,7 +1203,6 @@ h1 {
     font-family: inherit;
     font-weight: 500;
     padding: 4px 6px;
-    
 }
 
 @supports not (background: color-mix(in srgb, black 50%, white 50%)) {
@@ -1239,12 +1214,10 @@ h1 {
 .select-dark option {
     background: color-mix(in srgb, var(--select-surface) 18%, var(--color-bg-secondary)) !important;
     color: var(--color-text-primary) !important;
-    /* padding: var(--spacing-sm); */
     border-color: var(--color-accent-bright-orange);
     font-weight: 500;
 }
 
-/* Selected option (when dropdown is open) */
 .select-dark option:checked,
 .select-dark option[selected] {
     background: var(--select-option-selected) !important;
@@ -1253,13 +1226,11 @@ h1 {
 }
 
 .select-dark option:hover {
-    /* background: var(--color-accent-blue); */
     border-color: var(--color-accent-bright-orange);
 }
 
-
 .select-dark:hover:not(.disabled) {
-     background: var(--select-surface-hover);
+    background: var(--select-surface-hover);
     border-color: var(--color-accent-bright-orange);
 }
 
@@ -1323,8 +1294,6 @@ html {
     padding: 6px;
     background: var(--color-bg-secondary);
     border-radius: var(--radius-md);
-    /* border: 1px solid var(--color-border); */
-    /* margin-bottom: 2px; */
 }
 
 .mod-slot.inactive {
@@ -1383,7 +1352,6 @@ html {
     transform: scale(1.1);
 }
 
-/* MIDI CC Configuration Row */
 .mod-midicc-config {
     display: grid;
     grid-template-columns: 0px 1fr 14px 1fr 3px;
@@ -1438,13 +1406,11 @@ input[type="file"] {
         gap: 15px;
     }
     
-    /* Keep 4x4 grid even on mobile - just smaller */
     .pad-grid {
         grid-template-columns: repeat(4, 1fr);
-        gap: 8px; /* Smaller gap on mobile */
+        gap: 8px;
     }
     
-    /* Make pads smaller but keep all 16 visible */
     .pad {
         font-size: 0.8em;
     }
@@ -1458,11 +1424,11 @@ input[type="file"] {
     }
 
     .param-grid {
-    display: block;
-    grid-template-columns: repeat(1, 1fr);
-    
+        display: block;
+        grid-template-columns: repeat(1, 1fr);
     }
-}    
+}
+
 /* ============================================
    ACCESSIBILITY
    ============================================ */
@@ -1473,7 +1439,6 @@ input[type="file"] {
     outline-offset: 2px;
 }
 
-/* Reduce motion for users who prefer it */
 @media (prefers-reduced-motion: reduce) {
     * {
         animation-duration: 0.01ms !important;
@@ -1505,7 +1470,6 @@ input[type="file"] {
     font-style: italic;
 }
 
-/* Multisample list */
 .multisample-list {
     background: var(--color-bg-primary);
     border-radius: var(--radius-md);
@@ -1543,7 +1507,6 @@ input[type="file"] {
     color: var(--color-accent-blue);
 }
 
-
 /* ============================================
    MODAL ICON SCALING
    ============================================ */
@@ -1558,9 +1521,6 @@ input[type="file"] {
     vector-effect: non-scaling-stroke;
 }
 
-/* ============================================
-   MODAL ICON CLASSES
-   ============================================ */
 #modalIcon .cls-1 {
     fill: white;
 }
@@ -1568,7 +1528,6 @@ input[type="file"] {
 #modalIcon .cls-2 {
     fill: black;
 }
-
 
 /* ============================================
    MULTISAMPLE KEYBOARD VISUALIZER
@@ -1600,30 +1559,15 @@ input[type="file"] {
     font-size: 0.9em;
 }
 
-
-/* Multi-tab specific 4-column grid layout */
 .multi-param-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 15px;
-    /* margin-bottom: 15px; */
 }
 
-/* Wide parameters that span 1.5 columns */
 .multi-param-wide {
     grid-column: span 2;
 }
-
-/* Ensure proper sizing on smaller screens */
-/* @media (max-width: 900px) {
-    .multi-param-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-    
-    .multi-param-wide {
-        grid-column: span 1;
-    }
-} */
 
 @media (max-width: 600px) {
     .multi-param-grid {
