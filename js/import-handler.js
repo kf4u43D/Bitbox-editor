@@ -323,6 +323,47 @@ async function refreshPadEditorIfOpen(targetPad) {
     }
 }
 
+function sanitizeMultisampleFolderSegment(name) {
+    const base = (name || 'Multisample')
+        .replace(/\.[^.]+$/, '')
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    return base || 'Multisample';
+}
+
+function getOrCreateManualMultisampleFolder(pad, row, col, assetCells, preferredName = '') {
+    const currentPath = (pad.filename || '').replace(/^\.?[\\\/]/, '');
+    const currentParts = currentPath ? currentPath.split(/[\\\/]/).filter(Boolean) : [];
+    const currentLeaf = currentParts.length > 0 ? currentParts[currentParts.length - 1] : '';
+    const currentLooksLikeFile = /\.[^.]+$/.test(currentLeaf);
+
+    let folderName = '';
+    if (currentLeaf && !currentLooksLikeFile) {
+        folderName = currentLeaf;
+    } else {
+        const padNumber = (row * 4 + col + 1).toString().padStart(2, '0');
+        const preferredStem = sanitizeMultisampleFolderSegment(preferredName);
+        folderName = `Pad${padNumber}_${preferredStem}`;
+    }
+
+    pad.filename = `.\\${folderName}`;
+
+    assetCells.forEach((asset) => {
+        if (parseInt(asset.params?.asssrcrow, 10) !== row || parseInt(asset.params?.asssrccol, 10) !== col) {
+            return;
+        }
+
+        const sampleName = (asset.filename || '').split(/[/\\]/).pop();
+        if (sampleName) {
+            asset.filename = `.\\${folderName}\\${sampleName}`;
+        }
+    });
+
+    return folderName;
+}
+
 async function addWavToMultisamplePad(file, targetPad, assignment = {}) {
     if (!file || !targetPad) {
         throw new Error('Missing target pad');
@@ -361,13 +402,11 @@ async function addWavToMultisamplePad(file, targetPad, assignment = {}) {
     pad.type = 'sample';
     pad.params.multisammode = '1';
     pad.params.cellmode = '0';
-    if (!pad.filename) {
-        pad.filename = `.\\${file.name}`;
-    }
+    const multisampleFolder = getOrCreateManualMultisampleFolder(pad, row, col, assetCells, file.name);
 
     const asset = {
         row: assetCells.length,
-        filename: `.\\${file.name}`,
+        filename: `.\\${multisampleFolder}\\${file.name}`,
         params: {
             rootnote: targetMidi.toString(),
             keyrangebottom: keyRangeBottom.toString(),
@@ -501,8 +540,7 @@ async function convertSFZToPreset(sfzData, wavFiles) {
 }
 
 /**
- * Converts SFZ to single pad (with advanced layer detection)
- * Handles stacked layers vs velocity layers
+ * Converts SFZ to single pad multisample
  * 
  * @param {Object} sfzData - Parsed SFZ data
  * @param {Array} wavFiles - Array of WAV file data
@@ -512,612 +550,108 @@ async function convertSFZToPad(sfzData, wavFiles, targetPad) {
     const row = parseInt(targetPad.dataset.row);
     const col = parseInt(targetPad.dataset.col);
     const { presetData } = window.BitboxerData;
+    const pad = presetData.pads[row][col];
     
-    const validRegions = sfzData.regions.filter(r => r.wavFile);
+    // Setup multisample mode
+    pad.type = 'sample';
+    pad.params.multisammode = '1';
+    pad.params.cellmode = '0';
     
-    if (validRegions.length === 0) {
-        window.BitboxerUtils.setStatus('No valid samples in SFZ', 'error');
-        return;
-    }
+    const multisamFolder = sfzData.file.name.replace('.sfz', '');
+    pad.filename = `.\\${multisamFolder}`;
     
-    // Use advanced layer analysis
-    const analysis = window.BitboxerFileHandler.analyzeSFZLayersAdvanced(validRegions);
-    
-    // Single layer - load directly
-    if (!analysis.hasMultipleLayers) {
-        const layer = analysis.layers[0];
-
-        // Read WAV metadata FIRST
-        const wavMetadata = await readLayerWAVMetadata(layer);
-
-        if (!wavMetadata.samlen) {
-            window.BitboxerUtils.setStatus('⚠️ Could not read sample length, aborting import', 'error');
-            return;
-        }
-
-        // Pass metadata through
-        window.BitboxerFileHandler.loadLayerToPad(
-            layer, 
-            row, 
-            col, 
-            '1',
-            sfzData.file.name,
-            analysis.totalLayers,
-            wavMetadata  // NEW: Pass WAV metadata
-        );
-
-        window.BitboxerUI.updatePadDisplay();
-        await refreshPadEditorIfOpen(targetPad);
-
-        window.BitboxerUtils.setStatus(
-            layer.needsMerge 
-                ? `Imported ${layer.velocityZones} zones (merged to 16)` 
-                : `Imported ${layer.velocityZones} velocity zone(s)`,
-            'success'
-        );
-        return;
-    }
-    
-    // Multiple layers - show adjustment modal FIRST
-    window.BitboxerUtils.setStatus('Multiple layers detected...', 'info');
-
-    // NEW: Show layer adjustment modal
-    const adjustResult = await window.BitboxerFileHandler.showLayerAdjustmentModal(
-        analysis.layers, 
-        targetPad
+    // Remove existing assets for this pad
+    window.BitboxerData.assetCells = window.BitboxerData.assetCells.filter(asset =>
+        !(parseInt(asset.params.asssrcrow) === row &&
+          parseInt(asset.params.asssrccol) === col)
     );
-
-    if (adjustResult.cancelled) {
-        window.BitboxerUtils.setStatus('Import cancelled', 'info');
-        return;
+    
+    // Add new assets
+    let validRegions = 0;
+    for (let i = 0; i < sfzData.regions.length; i++) {
+        const region = sfzData.regions[i];
+        if (!region.wavFile) continue;
+        
+        const asset = createAssetFromSFZRegion(region, row, col, window.BitboxerData.assetCells.length);
+        window.BitboxerData.assetCells.push(asset);
+        validRegions++;
     }
-
-    // Use adjusted layers
-    const finalLayers = adjustResult.layers;
-
-    // Now show pad mapping modal
-    const result = await window.BitboxerFileHandler.promptLayerMappingAdvanced(
-        finalLayers, 
-        targetPad
-    );
-
-    if (result.cancelled) {
-        window.BitboxerUtils.setStatus('Import cancelled', 'info');
-        return;
-    }
-
-    // Load each layer to selected pad
-    for (const mapping of result.mappings) {
-        // Read WAV metadata for THIS layer
-        const wavMetadata = await readLayerWAVMetadata(mapping.layer);
-
-        if (!wavMetadata.samlen) {
-            window.BitboxerUtils.setStatus(
-                `⚠️ Could not read sample length for layer, using defaults`, 
-                'error'
-            );
-        }
-
-        window.BitboxerFileHandler.loadLayerToPad(
-            mapping.layer,
-            mapping.row,
-            mapping.col,
-            result.midiChannel,
-            sfzData.file.name,
-            result.mappings.length,
-            wavMetadata  // NEW: Pass metadata
-        );
-
+    
+    // Apply global opcodes if any
+    if (sfzData.global) {
+        applySFZOpcodesToPad(pad, sfzData.global, {});
     }
     
     window.BitboxerUI.updatePadDisplay();
-    if (window.BitboxerData.currentEditingPad) {
-        const editingRow = parseInt(window.BitboxerData.currentEditingPad.dataset.row);
-        const editingCol = parseInt(window.BitboxerData.currentEditingPad.dataset.col);
-        const editingWasMapped = result.mappings.some((mapping) =>
-            mapping.row === editingRow && mapping.col === editingCol
-        );
-
-        if (editingWasMapped) {
-            await refreshPadEditorIfOpen(window.BitboxerData.currentEditingPad);
-        }
-    }
+    await refreshPadEditorIfOpen(targetPad);
     window.BitboxerUtils.setStatus(
-        `Imported ${result.mappings.length} layer(s) to ${result.mappings.length} pad(s)`,
+        `Imported ${validRegions} multisample layer(s) to pad ${targetPad.dataset.padnum}`,
         'success'
     );
 }
 
 /**
- * Reads WAV metadata for a layer's first region
- * @param {Object} layer - Layer with regions containing wavFile references
- * @returns {Promise<Object>} WAV metadata object
- */
-async function readLayerWAVMetadata(layer) {
-    const metadata = {
-        samlen: null,
-        loopPoints: null,
-        slices: [],
-        tempo: null,
-        rootNote: null
-    };
-    
-    if (!layer.regions || layer.regions.length === 0) {
-        console.warn('No regions in layer');
-        return metadata;
-    }
-    
-    const firstRegion = layer.regions[0];
-    if (!firstRegion.wavFile) {
-        console.warn('No WAV file attached to region');
-        return metadata;
-    }
-    
-    try {
-        // The wavFile structure has the File object directly, not nested
-        const wavFileObj = firstRegion.wavFile.file || firstRegion.wavFile;
-        
-        console.log('WAV file object type:', wavFileObj.constructor.name);
-        console.log('WAV file name:', wavFileObj.name);
-        
-        // Check if we have metadata already parsed
-        if (firstRegion.wavFile.metadata && firstRegion.wavFile.metadata.duration) {
-            const wavMeta = firstRegion.wavFile.metadata;
-            
-            // Calculate sample length from existing metadata
-            if (wavMeta.duration && wavMeta.sampleRate) {
-                metadata.samlen = Math.floor(wavMeta.sampleRate * wavMeta.duration);
-            }
-            
-            // Copy other metadata
-            metadata.loopPoints = wavMeta.loopPoints;
-            metadata.slices = wavMeta.slices || [];
-            metadata.tempo = wavMeta.tempo;
-            
-            console.log(`✓ Used cached WAV metadata: ${metadata.samlen} samples`);
-            return metadata;
-        }
-        
-        // No cached metadata - need to parse WAV file
-        let arrayBuffer;
-        if (typeof wavFileObj.arrayBuffer === 'function') {
-            arrayBuffer = await wavFileObj.arrayBuffer();
-        } else {
-            console.error('WAV file object has no arrayBuffer method');
-            return metadata;
-        }
-        
-        const wavMeta = window.BitboxerFileHandler.WAVParser.parseMetadata(arrayBuffer);
-        
-        // Calculate sample length
-        if (wavMeta.duration && wavMeta.sampleRate) {
-            metadata.samlen = Math.floor(wavMeta.sampleRate * wavMeta.duration);
-        }
-        
-        // Copy other metadata
-        metadata.loopPoints = wavMeta.loopPoints;
-        metadata.slices = wavMeta.slices || [];
-        metadata.tempo = wavMeta.tempo;
-        
-        console.log(`✓ Read WAV metadata: ${metadata.samlen} samples`);
-        
-    } catch (error) {
-        console.error('WAV metadata read failed:', error);
-        window.BitboxerUtils.setStatus(`⚠️ Could not read WAV: ${error.message}`, 'error');
-    }
-    
-    return metadata;
-}
-
-/**
- * Analyzes SFZ regions for layer structure
- * Detects stacked vs velocity layers
- * 
- * @param {Array} regions - SFZ regions to analyze
- * @returns {Object} Analysis result with isStacked flag
- */
-function analyzeSFZLayers(regions) {
-    const keyGroups = {};
-    regions.forEach(r => {
-        const keyRange = `${r.lokey || 0}-${r.hikey || 127}`;
-        if (!keyGroups[keyRange]) keyGroups[keyRange] = [];
-        keyGroups[keyRange].push(r);
-    });
-    
-    let hasStackedLayers = false;
-    
-    for (const [keyRange, group] of Object.entries(keyGroups)) {
-        if (group.length > 1) {
-            const hasOverlap = group.some((r1, i) => 
-                group.slice(i + 1).some(r2 => {
-                    const v1lo = r1.lovel || 0;
-                    const v1hi = r1.hivel || 127;
-                    const v2lo = r2.lovel || 0;
-                    const v2hi = r2.hivel || 127;
-                    return !(v1hi < v2lo || v2hi < v1lo);
-                })
-            );
-            
-            if (hasOverlap) {
-                hasStackedLayers = true;
-                break;
-            }
-        }
-    }
-    
-    return {
-        isStacked: hasStackedLayers,
-        keyGroups: keyGroups,
-        totalLayers: Object.values(keyGroups).reduce((sum, g) => sum + g.length, 0)
-    };
-}
-
-/**
- * Prompts user to map SFZ layers to pads
- * Used for stacked layer imports
- * 
- * @param {Array} regions - SFZ regions to map
- * @param {HTMLElement} targetPad - Initial target pad
- * @returns {Promise<Array>} Array of {region, row, col} mappings
- */
-async function promptLayerToPadMapping(regions, targetPad) {
-    const { presetData } = window.BitboxerData;
-    
-    const availablePads = [];
-    for (let row = 0; row < 4; row++) {
-        for (let col = 0; col < 4; col++) {
-            const pad = presetData.pads[row][col];
-            const padNum = row * 4 + col + 1;
-            const isEmpty = !pad.filename || pad.type === 'samtempl';
-            availablePads.push({ row, col, padNum, isEmpty, currentName: pad.filename });
-        }
-    }
-    
-    return new Promise((resolve) => {
-        const modal = document.createElement('div');
-        modal.className = 'modal show';
-        modal.style.zIndex = '3000';
-        modal.innerHTML = `
-            <div class="modal-content" style="max-width: 700px; max-height: 90vh; overflow-y: auto;">
-                <div class="modal-header">
-                    <h2>Map SFZ Layers to Pads</h2>
-                </div>
-                <div style="padding: 20px;">
-                    <p style="margin-bottom: 15px;">
-                        This SFZ has <strong>${regions.length} layers</strong> that play simultaneously.
-                        Choose which pad to load each layer to:
-                    </p>
-                    <div id="layerMappingContainer" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px;"></div>
-                    <div style="display: flex; gap: 10px;">
-                        <button class="btn btn-primary" id="importLayersBtn" style="flex: 1;">Import Layers</button>
-                        <button class="btn" id="cancelLayersBtn" style="flex: 1;">Cancel</button>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        document.body.appendChild(modal);
-        
-        const container = document.getElementById('layerMappingContainer');
-        const selectedDestinations = new Set();
-        
-        regions.forEach((region, idx) => {
-            const sampleName = region.sample ? region.sample.split(/[/\\]/).pop() : `Layer ${idx + 1}`;
-            container.innerHTML += `
-                <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; padding: 10px; background: var(--color-bg-tertiary); border-radius: var(--radius-md);">
-                    <div style="color: var(--color-accent-blue); font-weight: 600;">${sampleName}</div>
-                    <div style="color: var(--color-text-secondary);">→</div>
-                    <select class="select layer-target" data-layer-idx="${idx}" style="width: 100%;"></select>
-                </div>
-            `;
-        });
-        
-        const targetSelects = container.querySelectorAll('.layer-target');
-        
-        function updateAllOptions() {
-            targetSelects.forEach(select => {
-                const currentValue = select.value;
-                let options = '<option value="">-- Skip --</option>';
-                
-                availablePads.forEach(p => {
-                    const slotKey = `${p.row},${p.col}`;
-                    const isSelected = selectedDestinations.has(slotKey) && currentValue !== slotKey;
-                    
-                    if (!isSelected) {
-                        const label = p.isEmpty 
-                            ? `Pad ${p.padNum} (Empty)` 
-                            : `Pad ${p.padNum} (${p.currentName}) ⚠️`;
-                        options += `<option value="${slotKey}" ${currentValue === slotKey ? 'selected' : ''}>${label}</option>`;
-                    }
-                });
-                
-                select.innerHTML = options;
-            });
-        }
-        
-        updateAllOptions();
-        
-        const emptyPads = availablePads.filter(p => p.isEmpty);
-        targetSelects.forEach((select, idx) => {
-            if (idx < emptyPads.length) {
-                const p = emptyPads[idx];
-                const slotKey = `${p.row},${p.col}`;
-                select.value = slotKey;
-                selectedDestinations.add(slotKey);
-            }
-        });
-        
-        updateAllOptions();
-        
-        targetSelects.forEach(select => {
-            select.addEventListener('change', () => {
-                selectedDestinations.clear();
-                targetSelects.forEach(s => {
-                    if (s.value) selectedDestinations.add(s.value);
-                });
-                updateAllOptions();
-            });
-        });
-        
-        document.getElementById('importLayersBtn').onclick = () => {
-            const mappings = [];
-            targetSelects.forEach(select => {
-                if (select.value) {
-                    const [row, col] = select.value.split(',').map(Number);
-                    const layerIdx = parseInt(select.dataset.layerIdx);
-                    mappings.push({ region: regions[layerIdx], row, col });
-                }
-            });
-            
-            document.body.removeChild(modal);
-            resolve(mappings);
-        };
-        
-        document.getElementById('cancelLayersBtn').onclick = () => {
-            document.body.removeChild(modal);
-            resolve(null);
-        };
-    });
-}
-
-/**
- * Creates Bitbox asset cell from SFZ region
- * Extracts key/velocity mapping and root note
+ * Creates an asset cell from an SFZ region
  * 
  * @param {Object} region - SFZ region data
- * @param {number} padRow - Parent pad row
- * @param {number} padCol - Parent pad column
+ * @param {number} sourceRow - Source pad row
+ * @param {number} sourceCol - Source pad col
  * @param {number} assetIndex - Asset index
- * @returns {Object} Asset cell data
+ * @returns {Object} Asset cell object
  */
-function createAssetFromSFZRegion(region, padRow, padCol, assetIndex) {
-    let keyRangeBottom = 0, keyRangeTop = 127, rootNote = 60;
-    
-    // Handle null/undefined/NaN properly
-    if (region.lokey !== undefined && region.lokey !== null && !isNaN(region.lokey)) {
-        keyRangeBottom = parseInt(region.lokey);
-    }
-    if (region.hikey !== undefined && region.hikey !== null && !isNaN(region.hikey)) {
-        keyRangeTop = parseInt(region.hikey);
-    }
-    if (region.pitch_keycenter !== undefined && region.pitch_keycenter !== null && !isNaN(region.pitch_keycenter)) {
-        rootNote = parseInt(region.pitch_keycenter);
-    } else if (region.key !== undefined && region.key !== null && !isNaN(region.key)) {
-        rootNote = parseInt(region.key);
-        if (!region.lokey && !region.hikey) {
-            keyRangeBottom = rootNote;
-            keyRangeTop = rootNote;
-        }
-    } else {
-        rootNote = Math.floor((keyRangeBottom + keyRangeTop) / 2);
-    }
-    
-    let velRangeBottom = 0, velRangeTop = 127;
-    if (region.lovel !== undefined && !isNaN(parseInt(region.lovel))) {
-        velRangeBottom = parseInt(region.lovel);
-    }
-    if (region.hivel !== undefined && !isNaN(parseInt(region.hivel))) {
-        velRangeTop = parseInt(region.hivel);
-    }
-    const velRoot = Math.floor((velRangeBottom + velRangeTop) / 2);
-    
-    const { presetData } = window.BitboxerData;
-    const padFilename = presetData.pads[padRow][padCol].filename;
-    const folderName = padFilename.replace('.\\', '');
-    const sampleFileName = region.sample.split(/[/\\]/).pop();
-    
+function createAssetFromSFZRegion(region, sourceRow, sourceCol, assetIndex) {
+    const samplePath = region.sample || region.wavFile?.name || '';
+    const wavName = samplePath.split(/[/\\]/).pop();
+    const folderName = region.folderName || (region.parentFolder || '').split(/[/\\]/).pop() || '';
+    const filename = folderName ? `.\\${folderName}\\${wavName}` : `.\\${wavName}`;
+
     return {
         row: assetIndex,
-        filename: `.\\${folderName}\\${sampleFileName}`,
+        filename,
         params: {
-            rootnote: rootNote.toString(),
-            keyrangebottom: keyRangeBottom.toString(),
-            keyrangetop: keyRangeTop.toString(),
-            velroot: velRoot.toString(),
-            velrangebottom: velRangeBottom.toString(),
-            velrangetop: velRangeTop.toString(),
-            asssrcrow: padRow.toString(),
-            asssrccol: padCol.toString()
-        }
+            rootnote: (region.pitch_keycenter ?? region.key ?? 60).toString(),
+            keyrangebottom: (region.lokey ?? region.key ?? 0).toString(),
+            keyrangetop: (region.hikey ?? region.key ?? 127).toString(),
+            velroot: Math.floor(((region.lovel ?? 0) + (region.hivel ?? 127)) / 2).toString(),
+            velrangebottom: (region.lovel ?? 0).toString(),
+            velrangetop: (region.hivel ?? 127).toString(),
+            asssrcrow: sourceRow.toString(),
+            asssrccol: sourceCol.toString()
+        },
+        wavMetadata: region.wavFile?.metadata || null
     };
 }
 
 /**
- * Applies WAV metadata to pad (called BEFORE SFZ opcodes)
- * @param {Object} pad - Pad data
- * @param {Object} wavMetadata - WAV file metadata
- */
-function applyWAVMetadataToPad(pad, wavMetadata) {
-    // Sample length (CRITICAL)
-    if (wavMetadata.samlen) {
-        pad.params.samlen = wavMetadata.samlen.toString();
-        
-        // Set loop end to match if not already set
-        if (pad.params.loopend === '0') {
-            pad.params.loopend = wavMetadata.samlen.toString();
-        }
-    }
-    
-    // Loop points
-    if (wavMetadata.loopPoints) {
-        pad.params.loopstart = wavMetadata.loopPoints.start.toString();
-        pad.params.loopend = wavMetadata.loopPoints.end.toString();
-        pad.params.loopmode = '1';
-        if (wavMetadata.loopPoints.type === 1) {
-            pad.params.loopmodes = '2'; // Bidirectional
-        }
-    }
-    
-    // Slices
-    if (wavMetadata.slices && wavMetadata.slices.length > 1) {
-        pad.params.cellmode = '2';
-        pad.slices = wavMetadata.slices.map(pos => ({ pos: pos.toString() }));
-    }
-    
-    // Tempo
-    if (wavMetadata.tempo) {
-        window.BitboxerData.presetData.tempo = Math.round(wavMetadata.tempo).toString();
-    }
-}
-
-/**
- * Applies SFZ opcodes to Bitbox pad parameters
- * Maps SFZ parameters to Bitbox equivalents
+ * Applies SFZ opcodes to pad parameters
  * 
- * @param {Object} pad - Pad data object
- * @param {Object} region - SFZ region data
- * @param {Object} wavMetadata - WAV file metadata
+ * @param {Object} pad - Target pad data
+ * @param {Object} opcodes - SFZ opcode map
+ * @param {Object} overrides - Optional override map
  */
-function applySFZOpcodesToPad(pad, region, wavMetadata) {
-    // Volume
-    if (region.volume !== undefined) {
-        pad.params.gaindb = Math.round(parseFloat(region.volume) * 1000).toString();
-    }
-    if (region.amplitude !== undefined) {
-        const db = 20 * Math.log10(parseFloat(region.amplitude) / 100);
-        pad.params.gaindb = Math.round(db * 1000).toString();
-    }
-    
-    // Pan
-    if (region.pan !== undefined) {
-        pad.params.panpos = Math.round(parseFloat(region.pan) * 10).toString();
-    }
-    
-    // Pitch
-    if (region.tune !== undefined) {
-        const semitones = parseFloat(region.tune) / 100;
-        pad.params.pitch = Math.round(semitones * 1000).toString();
-    }
-    
-    // Root note
-    if (region.pitch_keycenter !== undefined) {
-        pad.params.rootnote = region.pitch_keycenter.toString();
-    } else if (region.key !== undefined) {
-        pad.params.rootnote = region.key.toString();
-    }
-    
-    // Sample position
-    if (region.offset !== undefined) {
-        pad.params.samstart = region.offset.toString();
-    }
-    if (region.end !== undefined && region.offset !== undefined) {
-        const length = parseInt(region.end) - parseInt(region.offset);
-        pad.params.samlen = length.toString();
-    }
-    
-    // Loop mode
-    if (region.loop_mode !== undefined) {
-        const loopMode = region.loop_mode.toLowerCase();
-        pad.params.loopmode = (loopMode === 'loop_continuous' || loopMode === 'loop_sustain') ? '1' : '0';
-    }
-    
-    // Loop type
-    if (region.loop_type !== undefined) {
-        const loopType = region.loop_type.toLowerCase();
-        if (loopType === 'forward') pad.params.loopmodes = '1';
-        else if (loopType === 'alternate' || loopType === 'bidirectional') pad.params.loopmodes = '2';
-    }
-    
-    // Loop points
-    if (region.loop_start !== undefined && region.loop_end !== undefined) {
-        pad.params.loopstart = region.loop_start.toString();
-        pad.params.loopend = region.loop_end.toString();
-        pad.params.loopmode = '1';
-    } else if (wavMetadata.loopPoints) {
-        pad.params.loopstart = wavMetadata.loopPoints.start.toString();
-        pad.params.loopend = wavMetadata.loopPoints.end.toString();
-        pad.params.loopmode = '1';
-        if (wavMetadata.loopPoints.type === 1) pad.params.loopmodes = '2';
-    }
-    
-    // Slices from WAV
-    if (wavMetadata.slices && wavMetadata.slices.length > 1) {
-        pad.params.cellmode = '2';
-        pad.slices = wavMetadata.slices.map(pos => ({ pos: pos.toString() }));
-    }
-    
-    // Tempo from WAV
-    if (wavMetadata.tempo) {
-        window.BitboxerData.presetData.tempo = Math.round(wavMetadata.tempo).toString();
-    }
-    
-    // Envelope
-    if (region.ampeg_attack !== undefined) {
-        const seconds = parseFloat(region.ampeg_attack);
-        if (seconds > 0) pad.params.envattack = Math.round(109.83 * Math.log(seconds * 1000)).toString();
-    }
-    if (region.ampeg_decay !== undefined) {
-        const seconds = parseFloat(region.ampeg_decay);
-        if (seconds > 0) pad.params.envdecay = Math.round(94.83 * Math.log(seconds * 1000)).toString();
-    }
-    if (region.ampeg_sustain !== undefined) {
-        pad.params.envsus = Math.round((parseFloat(region.ampeg_sustain) / 100) * 1000).toString();
-    }
-    if (region.ampeg_release !== undefined) {
-        const seconds = parseFloat(region.ampeg_release);
-        if (seconds > 0) pad.params.envrel = Math.round(94.83 * Math.log(seconds * 1000)).toString();
-    }
-}
+function applySFZOpcodesToPad(pad, opcodes, overrides = {}) {
+    const map = {
+        volume: ['gaindb', v => Math.round(parseFloat(v) * 10)],
+        transpose: ['pitch', v => Math.round(parseFloat(v) * 100)],
+        pan: ['panpos', v => Math.round(parseFloat(v) * 10)],
+        fil_type: ['filtype', v => v],
+        cutoff: ['dualfilcutoff', v => Math.round(parseFloat(v))],
+        resonance: ['res', v => Math.round(parseFloat(v) * 10)],
+        amp_veltrack: ['veltrack', v => Math.round(parseFloat(v))],
+        ampeg_attack: ['envattack', v => Math.round(parseFloat(v) * 1000)],
+        ampeg_decay: ['envdecay', v => Math.round(parseFloat(v) * 1000)],
+        ampeg_sustain: ['envsus', v => Math.round(parseFloat(v))],
+        ampeg_release: ['envrel', v => Math.round(parseFloat(v) * 1000)]
+    };
 
-/**
- * Assigns WAV files to empty pads sequentially
- * 
- * @param {Array} wavFiles - Array of WAV file data
- */
-function assignWAVsToPads(wavFiles) {
-    const { presetData } = window.BitboxerData;
-    let assignedCount = 0;
-    
-    for (let i = 0; i < Math.min(wavFiles.length, 16); i++) {
-        const wavData = wavFiles[i];
-        const row = Math.floor(i / 4);
-        const col = i % 4;
-        const pad = presetData.pads[row][col];
-        
-        pad.filename = wavData.name;
-        pad.type = 'sample';
-        
-        if (wavData.metadata.loopPoints) {
-            pad.params.loopstart = wavData.metadata.loopPoints.start.toString();
-            pad.params.loopend = wavData.metadata.loopPoints.end.toString();
-            pad.params.loopmode = '1';
-            if (wavData.metadata.loopPoints.type === 1) pad.params.loopmodes = '2';
+    const merged = { ...opcodes, ...overrides };
+    Object.entries(merged).forEach(([opcode, value]) => {
+        const mapping = map[opcode];
+        if (mapping) {
+            const [param, transform] = mapping;
+            pad.params[param] = transform(value).toString();
         }
-        
-        if (wavData.metadata.slices.length > 1) {
-            pad.params.cellmode = '2';
-            pad.slices = wavData.metadata.slices.map(pos => ({ pos: pos.toString() }));
-        }
-        
-        if (wavData.metadata.tempo) {
-            window.BitboxerData.presetData.tempo = Math.round(wavData.metadata.tempo).toString();
-        }
-        
-        assignedCount++;
-    }
-    
-    window.BitboxerUI.updatePadDisplay();
-    window.BitboxerUtils.setStatus(`Loaded ${assignedCount} WAV file(s)`, 'success');
+    });
 }
 
 // ============================================
@@ -1125,405 +659,247 @@ function assignWAVsToPads(wavFiles) {
 // ============================================
 
 /**
- * Handles missing samples in SFZ import
- * Prompts user to locate missing files
+ * Searches working folder recursively for missing WAV files
  * 
- * @param {Object} sfzFile - SFZ file data
- * @param {Array} existingWavFiles - Already found WAV files
- * @returns {Promise<Object>} {cancelled, wavFiles}
+ * @param {Array<string>} sampleNames - WAV names to search for
+ * @returns {Promise<Array<File>>}
  */
-async function handleMissingSamples(sfzFile, existingWavFiles) {
-    const missingSamples = [];
-    const foundSamples = [];
-    
-    for (const region of sfzFile.regions) {
-        if (region.sample) {
-            if (region.wavFile) foundSamples.push(region.sample);
-            else missingSamples.push(region.sample);
-        }
+async function searchWorkingFolderForSamples(sampleNames) {
+    if (!window.workingFolderHandle || !sampleNames || sampleNames.length === 0) {
+        return [];
     }
-    
-    if (missingSamples.length === 0) {
-        return { cancelled: false, wavFiles: existingWavFiles };
-    }
-    
-    let newWavFiles = [];
-    
-    try {
-        const totalSamples = foundSamples.length + missingSamples.length;
-        window.BitboxerUtils.setStatus(
-            `SFZ references ${totalSamples} samples, ${missingSamples.length} missing...`,
-            'info'
-        );
-        
-        if (window.showDirectoryPicker) {
-            newWavFiles = await searchWorkingFolderForSamples(missingSamples);
 
-        } else {
-            newWavFiles = await searchFilesForSamples(missingSamples);
-        }
-        
-        if (newWavFiles.length === 0) {
-            const continueMessage = `No samples selected.\n\nMissing ${missingSamples.length} files:\n` +
-                missingSamples.map(s => `  • ${s}`).join('\n') +
-                `\n\nContinue without them?`;
-            
-            if (!confirm(continueMessage)) {
-                return { cancelled: true, wavFiles: existingWavFiles };
-            }
-            return { cancelled: false, wavFiles: existingWavFiles };
-        }
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            return { cancelled: true, wavFiles: existingWavFiles };
-        }
-        console.error('Sample search error:', error);
-        return { cancelled: true, wavFiles: existingWavFiles };
-    }
-    
-    try {
-        window.BitboxerUtils.setStatus('Processing found samples...', 'info');
-        const newResult = await window.BitboxerFileHandler.FileImporter.import(newWavFiles);
-        const allWavFiles = [...existingWavFiles, ...newResult.wavFiles];
-        
-        if (!window._lastImportedFiles) window._lastImportedFiles = new Map();
-        newResult.wavFiles.forEach(wav => {
-            window._lastImportedFiles.set(wav.name, wav.file);
-        });
-        
-        sfzFile.regions.forEach(region => {
-            if (!region.wavFile && region.sample) {
-                const sampleName = region.sample.split(/[/\\]/).pop().toLowerCase();
-                const match = allWavFiles.find(w => w.name.toLowerCase() === sampleName);
-                if (match) region.wavFile = match;
-            }
-        });
-        
-        const finalMissing = sfzFile.regions.filter(r => r.sample && !r.wavFile);
-        
-        if (finalMissing.length > 0) {
-            const finalMessage = `${finalMissing.length} sample(s) still missing.\n\nContinue anyway?`;
-            if (!confirm(finalMessage)) {
-                return { cancelled: true, wavFiles: existingWavFiles };
-            }
-        }
-        
-        return { cancelled: false, wavFiles: allWavFiles };
-    } catch (error) {
-        console.error('Processing error:', error);
-        return { cancelled: true, wavFiles: existingWavFiles };
-    }
-}
+    const lowerTargets = new Set(sampleNames.map(name => name.toLowerCase()));
+    const foundFiles = [];
 
-// ============================================
-// SAMPLE SEARCH (UNIFIED)
-// ============================================
-
-/**
- * Searches working folder for samples (unified version)
- * Stops when all samples are found (performance optimization)
- * 
- * @param {Array} targetSampleNames - Array of sample filenames to find
- * @returns {Promise<Array>} Array of found File objects
- */
-async function searchWorkingFolderForSamples(targetSampleNames) {
-    try {
-        let dirHandle = window.BitboxerData.workingFolderHandle;
-        
-        // If no working folder, prompt user to select one
-        if (!dirHandle) {
-            window.BitboxerUtils.setStatus('Select folder with samples...', 'info');
-            dirHandle = await window.showDirectoryPicker({ 
-                mode: 'read',
-                startIn: 'documents'
-            });
-            
-            window.BitboxerData.workingFolderHandle = dirHandle;
-            
-            const btn = document.getElementById('setWorkingFolderBtn');
-            if (btn) {
-                btn.textContent = `📁 ${dirHandle.name}`;
-                btn.classList.remove('blink-warning');
-                btn.classList.add('active');
-            }
-        }
-        
-        const foundFiles = [];
-        const targetLookup = {};
-        
-        // Build case-insensitive lookup
-        targetSampleNames.forEach(name => {
-            const fileName = name.split(/[/\\]/).pop().toLowerCase();
-            targetLookup[fileName] = name;
-        });
-        
-        const totalNeeded = Object.keys(targetLookup).length;
-        console.log(`Searching for ${totalNeeded} sample(s) in: ${dirHandle.name}`);
-        
-        // Recursive search with early exit
-        async function searchDir(handle, depth = 0) {
-            // Stop if max depth reached
-            if (depth > 5) return;
-            
-            // CRITICAL: Stop if all samples found
-            if (foundFiles.length >= totalNeeded) return;
-            
-            for await (const entry of handle.values()) {
-                // Check again in loop (for performance)
-                if (foundFiles.length >= totalNeeded) return;
-                
-                if (entry.kind === 'file') {
-                    const fileName = entry.name.toLowerCase();
-                    
-                    if (fileName.endsWith('.wav') && targetLookup[fileName]) {
-                        const file = await entry.getFile();
+    async function searchDirectory(dirHandle) {
+        for await (const [name, handle] of dirHandle.entries()) {
+            if (handle.kind === 'file') {
+                const lower = name.toLowerCase();
+                if (lowerTargets.has(lower)) {
+                    try {
+                        const file = await handle.getFile();
                         foundFiles.push(file);
-                        console.log(`  ✓ Found: ${entry.name} (${foundFiles.length}/${totalNeeded})`);
+                    } catch (error) {
+                        console.warn('Failed to read working folder file:', name, error);
                     }
-                } else if (entry.kind === 'directory') {
-                    await searchDir(entry, depth + 1);
                 }
+            } else if (handle.kind === 'directory') {
+                await searchDirectory(handle);
+            }
+
+            if (foundFiles.length === sampleNames.length) {
+                return;
             }
         }
-        
-        await searchDir(dirHandle);
-        
-        console.log(`Search complete: ${foundFiles.length}/${totalNeeded} found`);
-        return foundFiles;
-        
-    } catch (error) {
-        if (error.name === 'AbortError') throw error;
-        console.error('Folder search error:', error);
-        return [];
     }
-}
 
-
-/**
- * Searches manually selected files for missing samples
- * 
- * @param {Array} missingSamplePaths - Array of missing sample paths
- * @returns {Promise<Array>} Array of found File objects
- */
-async function searchFilesForSamples(missingSamplePaths) {
     try {
-        window.BitboxerUtils.setStatus('Select missing samples...', 'info');
-        
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.multiple = true;
-        input.accept = '.wav';
-        
-        const files = await new Promise((resolve, reject) => {
-            input.onchange = () => resolve(Array.from(input.files));
-            input.oncancel = () => reject(new Error('AbortError'));
-            input.click();
-        });
-        
-        const targetNames = missingSamplePaths.map(path =>
-            path.split(/[/\\]/).pop().toLowerCase()
-        );
-        
-        return files.filter(file =>
-            targetNames.includes(file.name.toLowerCase())
-        );
+        await searchDirectory(window.workingFolderHandle);
     } catch (error) {
-        if (error.message === 'AbortError') {
-            const abortError = new Error('User cancelled');
-            abortError.name = 'AbortError';
-            throw abortError;
-        }
-        console.error('File search error:', error);
-        return [];
+        console.warn('Working folder search failed:', error);
     }
+
+    return foundFiles;
 }
 
-// ============================================
-// AUTO-LOAD REFERENCED SAMPLES
-// ============================================
-
 /**
- * Automatically loads WAV files referenced in loaded preset
- * Searches working folder or prompts user
+ * Resolves missing samples for an SFZ or preset import
+ * 
+ * @param {Object} sfzData - Parsed SFZ data
+ * @param {Array} foundWavFiles - WAV files already found in the package
+ * @returns {Promise<{wavFiles:Array,cancelled:boolean}>}
  */
-async function autoLoadReferencedSamples() {
-    const { presetData, assetCells, workingFolderHandle } = window.BitboxerData;
-    
-    if (window._lastImportedFiles && window._lastImportedFiles.size > 0) {
-        return;
-    }
-    
-    const referencedSamples = new Set();
-    
-    // Collect from pads
-    for (let row = 0; row < 4; row++) {
-        for (let col = 0; col < 4; col++) {
-            const pad = presetData.pads[row][col];
-            if (pad.filename && pad.params.multisammode !== '1') {
-                const wavName = pad.filename.split(/[/\\]/).pop();
-                if (wavName.endsWith('.wav') || wavName.endsWith('.WAV')) {
-                    referencedSamples.add(wavName);
-                }
-            }
-        }
-    }
-    
-    // Collect from assets
-    assetCells.forEach(asset => {
-        const wavName = asset.filename.split(/[/\\]/).pop();
-        if (wavName.endsWith('.wav') || wavName.endsWith('.WAV')) {
-            referencedSamples.add(wavName);
+async function handleMissingSamples(sfzData, foundWavFiles = []) {
+    const requiredSamples = new Map();
+
+    (sfzData.regions || []).forEach(region => {
+        const sampleName = (region.sample || region.wavFile?.name || '').split(/[/\\]/).pop();
+        if (sampleName) {
+            requiredSamples.set(sampleName.toLowerCase(), sampleName);
         }
     });
-    
-    if (referencedSamples.size === 0) return;
-    
-    // No working folder - prompt
-    if (!workingFolderHandle) {
-        const shouldLocate = await promptNoWorkingFolder(referencedSamples.size);
-        if (shouldLocate) {
-            try {
-                const foundFiles = await promptForSampleFolder(Array.from(referencedSamples));
-                window._lastImportedFiles = new Map();
-                foundFiles.forEach(file => {
-                    window._lastImportedFiles.set(file.name, file);
-                });
-                window.BitboxerUtils.setStatus(
-                    `Loaded ${foundFiles.length}/${referencedSamples.size} sample(s)`,
-                    foundFiles.length < referencedSamples.size ? 'error' : 'success'
-                );
-            } catch (error) {
-                window.BitboxerUtils.setStatus('Sample loading cancelled', 'info');
-            }
-        } else {
-            window.BitboxerUtils.setStatus('Preset loaded without samples', 'error');
-        }
-        return;
+
+    const foundNames = new Set(foundWavFiles.map(w => w.name.toLowerCase()));
+    const missingSamples = Array.from(requiredSamples.entries())
+        .filter(([lower]) => !foundNames.has(lower))
+        .map(([, original]) => original);
+
+    if (missingSamples.length === 0) {
+        return { wavFiles: foundWavFiles, cancelled: false };
     }
-    
-    // Search working folder
-    window.BitboxerUtils.setStatus('Searching for samples...', 'info');
-    
-    try {
-        const foundFiles = await searchWorkingFolderForSamples(
-            Array.from(referencedSamples)
-        );
-        
+
+    const locatedFiles = await searchWorkingFolderForSamples(missingSamples);
+    const locatedNames = new Set(locatedFiles.map(f => f.name.toLowerCase()));
+    const stillMissing = missingSamples.filter(name => !locatedNames.has(name.toLowerCase()));
+
+    if (stillMissing.length === 0) {
+        return { wavFiles: [...foundWavFiles, ...locatedFiles], cancelled: false };
+    }
+
+    if (locatedFiles.length > 0) {
+        const proceed = await promptSomeMissing(stillMissing, foundWavFiles.length + locatedFiles.length, requiredSamples.size);
+        if (!proceed) {
+            return { wavFiles: [...foundWavFiles, ...locatedFiles], cancelled: false };
+        }
+    }
+
+    const userFiles = await promptUserToLocateSamples(stillMissing);
+    if (!userFiles) {
+        return { wavFiles: [...foundWavFiles, ...locatedFiles], cancelled: true };
+    }
+
+    return {
+        wavFiles: [...foundWavFiles, ...locatedFiles, ...userFiles],
+        cancelled: false
+    };
+}
+
+/**
+ * Attempts to auto-load samples referenced by current preset from the working folder.
+ */
+async function autoLoadReferencedSamples() {
+    const { presetData, assetCells } = window.BitboxerData;
+    if (!presetData) return;
+
+    const needed = new Set();
+
+    for (let row = 0; row < 4; row++) {
+        for (let col = 0; col < 4; col++) {
+            const pad = presetData.pads?.[row]?.[col];
+            if (!pad?.filename) continue;
+            const leaf = pad.filename.split(/[/\\]/).pop();
+            if (leaf && /\.wav$/i.test(leaf)) {
+                needed.add(leaf);
+            }
+        }
+    }
+
+    (assetCells || []).forEach(asset => {
+        const leaf = (asset.filename || '').split(/[/\\]/).pop();
+        if (leaf && /\.wav$/i.test(leaf)) {
+            needed.add(leaf);
+        }
+    });
+
+    if (needed.size === 0) return;
+
+    const foundFiles = await searchWorkingFolderForSamples(Array.from(needed));
+    if (foundFiles.length === 0) return;
+
+    if (!window._lastImportedFiles) {
         window._lastImportedFiles = new Map();
-        foundFiles.forEach(file => {
-            window._lastImportedFiles.set(file.name, file);
+    }
+
+    foundFiles.forEach(file => {
+        window._lastImportedFiles.set(file.name, file);
+    });
+}
+
+/**
+ * Prompts user to choose sample files for a list of missing sample names.
+ * 
+ * @param {Array<string>} missingSamples
+ * @returns {Promise<Array<File>|null>}
+ */
+async function promptUserToLocateSamples(missingSamples) {
+    if (!missingSamples || missingSamples.length === 0) return [];
+
+    const supportsPicker = typeof window.showOpenFilePicker === 'function';
+    if (!supportsPicker) {
+        const fallback = document.createElement('input');
+        fallback.type = 'file';
+        fallback.accept = '.wav,.WAV';
+        fallback.multiple = true;
+
+        return new Promise(resolve => {
+            fallback.onchange = () => resolve(Array.from(fallback.files || []));
+            fallback.click();
         });
-        
-        if (foundFiles.length >= referencedSamples.size) {
-            window.BitboxerUtils.setStatus(
-                `Loaded preset with ${referencedSamples.size} sample(s)`,
-                'success'
-            );
-            return;
+    }
+
+    try {
+        const handles = await window.showOpenFilePicker({
+            multiple: true,
+            types: [{
+                description: 'WAV files',
+                accept: { 'audio/wav': ['.wav', '.WAV'] }
+            }]
+        });
+
+        const files = [];
+        for (const handle of handles) {
+            files.push(await handle.getFile());
         }
-        
-        const foundNames = new Set(foundFiles.map(f => f.name.toLowerCase()));
-        const missing = Array.from(referencedSamples).filter(
-            name => !foundNames.has(name.toLowerCase())
-        );
-        
-        const shouldLocate = await promptSomeMissing(missing, foundFiles.length, referencedSamples.size);
-        
-        if (shouldLocate) {
-            try {
-                const additionalFiles = await searchFilesForSamples(missing);
-                additionalFiles.forEach(file => {
-                    window._lastImportedFiles.set(file.name, file);
-                });
-                window.BitboxerUtils.setStatus(
-                    `Loaded ${window._lastImportedFiles.size}/${referencedSamples.size} sample(s)`,
-                    window._lastImportedFiles.size < referencedSamples.size ? 'error' : 'success'
-                );
-            } catch (error) {
-                window.BitboxerUtils.setStatus(
-                    `Loaded ${foundFiles.length}/${referencedSamples.size} sample(s) - some missing`,
-                    'error'
-                );
-            }
-        } else {
-            window.BitboxerUtils.setStatus(
-                `Loaded ${foundFiles.length}/${referencedSamples.size} sample(s) - some missing`,
-                'error'
-            );
-        }
+        return files;
     } catch (error) {
-        console.error('Sample search error:', error);
-        window.BitboxerUtils.setStatus('Could not search for samples', 'error');
-    }
-}
-
-/**
- * Prompts user to select folder containing samples
- * 
- * @param {Array} sampleNames - Array of sample names to find
- * @returns {Promise<Array>} Array of found File objects
- */
-async function promptForSampleFolder(sampleNames) {
-    if (window.showDirectoryPicker) {
-        window.BitboxerUtils.setStatus('Select folder with samples...', 'info');
-        const dirHandle = await window.showDirectoryPicker({ mode: 'read' });
-        
-        window.BitboxerData.workingFolderHandle = dirHandle;
-        const btn = document.getElementById('setWorkingFolderBtn');
-        if (btn) {
-            btn.textContent = `📁 ${dirHandle.name}`;
-            btn.classList.add('active');
+        if (error?.name === 'AbortError') {
+            return null;
         }
-        
-        return await searchWorkingFolderForSamples(dirHandle, sampleNames);
-    } else {
-        return await searchWorkingFolderForSamples(sampleNames);
+        throw error;
     }
 }
 
+/**
+ * Assigns imported WAV files to pads sequentially
+ * 
+ * @param {Array<Object>} wavFiles - WAV file descriptors from FileHandler
+ */
+function assignWAVsToPads(wavFiles) {
+    const { presetData } = window.BitboxerData;
+    let assigned = 0;
+
+    for (let row = 0; row < 4; row++) {
+        for (let col = 0; col < 4; col++) {
+            if (assigned >= wavFiles.length) break;
+            const pad = presetData.pads[row][col];
+            const wav = wavFiles[assigned];
+
+            pad.filename = wav.name;
+            pad.type = 'sample';
+            assigned++;
+        }
+    }
+
+    window.BitboxerUI.updatePadDisplay();
+    window.BitboxerUtils.setStatus(`Assigned ${assigned} WAV file(s)`, 'success');
+}
+
 // ============================================
-// USER PROMPTS
+// PROMPTS / UI HELPERS
 // ============================================
 
-/**
- * Prompts when no working folder is set
- * 
- * @param {number} sampleCount - Number of samples needed
- * @returns {Promise<boolean>} True if user wants to locate samples
- */
-async function promptNoWorkingFolder(sampleCount) {
+async function promptAllMissing(missingSamples) {
     return new Promise((resolve) => {
         const modal = document.createElement('div');
         modal.className = 'modal show';
         modal.style.zIndex = '3000';
         modal.innerHTML = `
-            <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-content" style="max-width: 600px;">
                 <div class="modal-header">
-                    <h2>📁 Locate Sample Files</h2>
+                    <h2>Missing Samples</h2>
                 </div>
                 <div style="padding: 20px;">
-                    <p style="margin-bottom: 15px;">
-                        This preset references <strong>${sampleCount} sample(s)</strong>.
-                    </p>
-                    <p style="margin-bottom: 20px; color: var(--color-text-secondary);">
-                        No working folder set. Locate samples?
-                    </p>
+                    <p style="margin-bottom: 15px;">The following samples are missing:</p>
+                    <div style="max-height: 200px; overflow-y: auto; background: var(--color-bg-primary); padding: 10px; border-radius: var(--radius-md); margin-bottom: 15px; font-family: monospace; font-size: 0.85em;">
+                        ${missingSamples.map(name => `<div>• ${name}</div>`).join('')}
+                    </div>
                     <div style="display: flex; gap: 10px;">
-                        <button class="btn btn-primary" id="locateBtn2" style="flex: 1;">📁 Locate</button>
-                        <button class="btn" id="skipBtn2" style="flex: 1;">Skip</button>
+                        <button class="btn btn-primary" id="locateBtn2" style="flex: 1;">Locate Samples</button>
+                        <button class="btn" id="cancelBtn2" style="flex: 1;">Cancel</button>
                     </div>
                 </div>
             </div>
         `;
-        
+
         document.body.appendChild(modal);
-        
+
         document.getElementById('locateBtn2').onclick = () => {
             document.body.removeChild(modal);
             resolve(true);
         };
-        
-        document.getElementById('skipBtn2').onclick = () => {
+
+        document.getElementById('cancelBtn2').onclick = () => {
             document.body.removeChild(modal);
             resolve(false);
         };
