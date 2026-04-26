@@ -296,6 +296,20 @@ async function showStartupModal() {
                     ✓ Start Working
                 </button>
                 
+                <div style="height: 20px;"></div>
+
+                <div class="startup-step">
+                    <h3 style="color: var(--color-accent-blue); margin-bottom: 10px;">
+                        Theme
+                    </h3>
+                    <p style="color: var(--color-text-secondary); font-size: 0.9em; margin-bottom: 10px;">
+                        Choose the default UI palette for this session. You can reopen Project Setup later to switch it.
+                    </p>
+                    <select class="select-dark" id="startupThemeSelect" title="Select UI theme"
+                            style="width: 100%; padding: 10px;">
+                    </select>
+                </div>
+
                 <p style="color: var(--color-text-secondary); font-size: 0.85em; margin-top: 15px; text-align: center;">
                     You can change folders later from the main menu
                 </p>
@@ -304,6 +318,8 @@ async function showStartupModal() {
     `;
     
     document.body.appendChild(modal);
+    window.BitboxerTheme?.initThemeSelector?.();
+    window.BitboxerTheme?.applyTheme?.(document.documentElement.dataset.theme || 'dark-spectral');
 
     return new Promise((resolve) => {
         // Setup event listeners
